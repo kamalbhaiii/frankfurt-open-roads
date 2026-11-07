@@ -1,0 +1,39 @@
+{
+    "name":  "frankfurt-open-roads",
+  "version": "0.1.0",
+    "description":  "Open-world browser driving game set in Frankfurt\u0027s real city centre (OpenStreetMap, three.js, Rapier).",
+    "scripts":  {
+                    "start":  "node build.mjs \u0026\u0026 node tools/serve.mjs --open",
+                    "serve":  "node tools/serve.mjs --open",
+                    "build":  "node build.mjs",
+                    "build:dev":  "node build.mjs --dev",
+                    "models":  "node tools/make-models.mjs",
+                    "streets":  "node tools/build-streets.cjs",
+                    "lint":  "eslint src tests tools build.mjs",
+                    "format":  "prettier --write \"src/**/*.{js,css,html}\" \"tests/**/*.mjs\" build.mjs",
+                    "test":  "node --test tests/unit.test.mjs",
+                    "test:smoke":  "node build.mjs --dev --out .build/smoke \u0026\u0026 node tests/smoke.mjs --dir .build/smoke"
+                },
+    "author":  "",
+    "license":  "UNLICENSED",
+    "dependencies":  {
+                         "@dimforge/rapier3d-compat":  "^0.21.0",
+                         "esbuild":  "^0.28.2",
+                         "jsts":  "^2.12.1",
+                         "suncalc":  "^2.1.2",
+                         "three":  "^0.187.0"
+                     },
+    "devDependencies":  {
+                            "@eslint/js":  "^9.39.5",
+                            "@gltf-transform/core":  "^4.5.1",
+                            "@gltf-transform/extensions":  "^4.5.1",
+                            "@gltf-transform/functions":  "^4.5.1",
+                            "eslint":  "^9.39.5",
+                            "globals":  "^15.15.0",
+                            "meshoptimizer":  "^1.3.0",
+                            "prettier":  "^3.9.10",
+                            "puppeteer-core":  "^24.43.1"
+                        },
+    "private":  true,
+    "type":  "module"
+}

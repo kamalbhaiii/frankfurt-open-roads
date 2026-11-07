@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <meta name="description" content="Open-world driving game set in Frankfurt's real city centre, built from OpenStreetMap data." />
+    <meta name="theme-color" content="#0b0d12" />
+    <title>Frankfurt: Open Roads</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,600;1,700;1,800&family=Barlow:wght@400;600;700&display=swap"
+    />
+    <style>
+      /*STYLES*/
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <!-- loading screen -->
+    <div id="loading" role="status" aria-live="polite">
+      <div class="ld-scene dusk on"><div class="ken"></div></div>
+      <div class="ld-scene night"><div class="ken"></div></div>
+      <div class="ld-scene day"><div class="ken"></div></div>
+      <div class="ld-title"><span class="t1">FRANKFURT</span><span class="t2">OPEN ROADS</span></div>
+      <div class="ld-bottom">
+        <div class="ld-tip" id="ld-tip"></div>
+        <div class="ld-progress">
+          <div class="ld-stage" id="ld-stage">Starting…</div>
+          <div class="ld-bar"><i id="ld-bar"></i></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HUD -->
+    <div id="hud" class="off" aria-hidden="true">
+      <div id="hud-help" class="popup"></div>
+      <div id="hud-objective" class="hidden shadow"></div>
+      <div id="hud-tr" class="shadow">
+        <div id="hud-clock">--:--</div>
+        <div id="hud-weather"></div>
+        <div id="hud-money">€0</div>
+        <div id="hud-money-delta"></div>
+        <div id="hud-wanted"></div>
+        <div id="hud-timer" class="hidden"></div>
+      </div>
+      <div id="hud-bl">
+        <canvas id="minimap" width="480" height="320"></canvas>
+        <div class="bars">
+          <div class="bar hp" id="hud-hp"><i></i></div>
+          <div class="bar ar" id="hud-ar"><i></i></div>
+        </div>
+        <div id="hud-gps" class="shadow"></div>
+      </div>
+      <div id="hud-br" class="shadow">
+        <div id="hud-radio" class="popup"></div>
+        <div id="hud-vehicle" class="popup"></div>
+        <div id="hud-speed" class="hidden"></div>
+        <div id="hud-carhp" class="hidden"><i></i></div>
+        <div id="hud-area" class="popup">
+          <div id="hud-district"></div>
+          <div id="hud-street"></div>
+        </div>
+      </div>
+      <div id="hud-subtitle" class="popup shadow"></div>
+      <div id="hud-prompt" class="popup"></div>
+      <div id="hud-note" class="popup shadow"></div>
+      <div id="hud-arrest" class="hidden shadow">
+        <div>ARREST</div>
+        <div class="bar"><i></i></div>
+      </div>
+      <div id="hud-big" class="hidden"></div>
+    </div>
+    <div id="credit" class="shadow">Map data © OpenStreetMap contributors (ODbL) · Weather: DWD via Bright Sky / Open-Meteo</div>
+
+    <div id="death"><h2 id="death-title"></h2></div>
+    <div id="fade"></div>
+
+    <!-- touch controls -->
+    <div id="touch">
+      <div id="joy"><div id="knob"></div></div>
+      <div class="tbtn" id="tJump" data-action="jump">JUMP</div>
+      <div class="tbtn" id="tCar" data-action="vehicle">🚗</div>
+      <div class="tbtn" id="tRun" data-action="sprint">RUN</div>
+      <div class="tbtn" id="tHorn" data-action="horn">📯</div>
+      <div class="tbtn" id="tMap" data-action="map">MAP</div>
+      <div class="tbtn" id="tCam" data-action="camera">CAM</div>
+      <div class="tbtn" id="tPause" data-action="pause">II</div>
+    </div>
+
+    <!-- menus are rendered by src/ui/menus.js -->
+    <div id="title" class="screen hidden"></div>
+    <div id="pause" class="screen hidden"></div>
+    <div id="dialog" class="hidden"></div>
+
+    <script>
+      /*GAME*/
+    </script>
+  </body>
+</html>
