@@ -24,12 +24,23 @@ const _a = {},
   _b = {},
   _c = {};
 
+// Central sections of current RMV Metrobus lines. Stops are snapped to the
+// street graph, then the road graph fills in the drivable path between them.
+const BUS_CORRIDORS = [
+  { line: 'M36', streets: ['Bornwiesenweg', 'Eschersheimer Landstraße', 'Alte Gasse', 'Konstablerwache', 'Börneplatz', 'Schöne Aussicht', 'Elisabethenstraße', 'Affentorplatz', 'Lokalbahnhof', 'Darmstädter Landstraße'] },
+  { line: 'M32', streets: ['Hanauer Landstraße', 'Ostendstraße', 'Zeil', 'Große Eschenheimer Straße', 'Eschersheimer Landstraße', 'Bockenheimer Landstraße', 'Westendstraße'] },
+  { line: 'M34', streets: ['Mainzer Landstraße', 'Kaiserstraße', 'Taunusstraße', 'Zeil', 'Berger Straße'] },
+  { line: 'M46', streets: ['Europa-Allee', 'Friedrich-Ebert-Anlage', 'Platz der Republik', 'Am Hauptbahnhof'] },
+];
+
 export class Transit {
   constructor(traffic) {
     this.traffic = traffic;
     this.trams = [];
     this.stops = []; // tram stops {x, z, yaw, platforms: [{x, z, yaw}], kind}
     this.busStops = [];
+    this.busRoutes = [];
+    this.nextBusRoute = 0;
     this.railGrid = new SpatialGrid(25);
     this.net = null;
     this.timer = 0;
@@ -94,31 +105,112 @@ export class Transit {
         }
       }
     }
+    this.buildBusRoutes();
     this.buildBusStops();
   }
 
-  buildBusStops() {
+  /** Build repeatable, graph-following paths through the mapped parts of RMV lines. */
+  buildBusRoutes() {
     const roads = ctx.roads;
-    const cands = roads.edges.filter((e) => e.rank >= 3 && e.len > 80 && !e.bridge).sort((a, b) => hash(a.id * 2.7) - hash(b.id * 2.7));
-    for (const e of cands) {
-      for (const dir of e.oneway ? [1] : [1, -1]) {
-        const sT = e.len * (dir > 0 ? 0.42 : 0.58);
-        const m = RoadNetwork.pose(e, dir, sT);
-        if (this.busStops.some((b) => b.dir === dir && Math.hypot(b.x - m.x, b.z - m.z) < STOP_SPACING)) continue;
-        if (this.railGrid && [...this.railGrid.query(m.x, m.z, 6)].length) continue; // shared tram stop instead
-        const kerb = e.width / 2;
-        const pl = RoadNetwork.pose(e, dir, sT, kerb + 1.4);
-        const stop = { edge: e, dir, s: sT, sFwd: dir > 0 ? sT : e.len - sT, x: m.x, z: m.z, kind: 'bus', waiting: 0, platforms: [] };
-        for (const off of [-4, 0, 4]) {
-          const q = RoadNetwork.pose(e, dir, clamp(sT + off, 0, e.len), kerb + 1.4);
-          stop.platforms.push({ x: q.x, z: q.z, yaw: wrapAngle(q.yaw - Math.PI / 2) });
-        }
-        stop.x = pl.x;
-        stop.z = pl.z;
-        e.busStops.push({ s: stop.sFwd, stop });
-        this.busStops.push(stop);
+    for (const spec of BUS_CORRIDORS) {
+      const anchors = [];
+      let previous = null;
+      for (const name of spec.streets) {
+        const candidates = roads.edges.filter((e) => e.name === name && e.len > 8);
+        if (!candidates.length) continue;
+        candidates.sort((a, b) => {
+          const pa = RoadNetwork.pose(a, 1, a.len / 2), pb = RoadNetwork.pose(b, 1, b.len / 2);
+          return previous ? Math.hypot(pa.x - previous.x, pa.z - previous.z) - Math.hypot(pb.x - previous.x, pb.z - previous.z) : b.len - a.len;
+        });
+        const e = candidates[0], mid = RoadNetwork.pose(e, 1, e.len / 2);
+        const ends = [RoadNetwork.pose(e, 1, 0), RoadNetwork.pose(e, 1, e.len)];
+        const node = previous && Math.hypot(ends[0].x - previous.x, ends[0].z - previous.z) > Math.hypot(ends[1].x - previous.x, ends[1].z - previous.z) ? ends[1] : ends[0];
+        if (!previous || Math.hypot(node.x - previous.x, node.z - previous.z) > 20) anchors.push({ name, point: [node.x, node.z], stopPoint: [mid.x, mid.z] });
+        previous = node;
+      }
+      if (anchors.length < 3) continue;
+      const steps = [], stops = [];
+      const appendLeg = (from, to) => {
+        const route = roads.route(from[0], from[1], to[0], to[1], true);
+        if (!route?.edges) return false;
+        for (const s of route.edges) if (!steps.length || steps.at(-1).edge !== s.edge || steps.at(-1).dir !== s.dir) steps.push(s);
+        return true;
+      };
+      let connected = true;
+      for (let i = 0; i < anchors.length - 1; i++) {
+        const start = anchors[i].point, end = anchors[i + 1].point;
+        connected = appendLeg(start, end) && connected;
+      }
+      // Return along a legal route to make a continuous service loop.
+      connected = appendLeg(anchors.at(-1).point, anchors[0].point) && connected;
+      if (!connected || steps.length < 4) continue;
+      for (let i = 0; i < anchors.length; i++) {
+        const anchor = anchors[i];
+        const options = steps.filter((s) => s.edge.name === anchor.name);
+        options.sort((a, b) => {
+          const pa = RoadNetwork.pose(a.edge, a.dir, a.edge.len / 2), pb = RoadNetwork.pose(b.edge, b.dir, b.edge.len / 2);
+          return Math.hypot(pa.x - anchor.stopPoint[0], pa.z - anchor.stopPoint[1]) - Math.hypot(pb.x - anchor.stopPoint[0], pb.z - anchor.stopPoint[1]);
+        });
+        const step = options[0];
+        if (!step) continue;
+        const hit = roads.nearest(anchor.stopPoint[0], anchor.stopPoint[1], 30, (e) => e === step.edge);
+        if (!hit) continue;
+        const s = step.dir > 0 ? hit.s : hit.edge.len - hit.s;
+        stops.push({ line: spec.line, name: anchor.name, edge: hit.edge, dir: step.dir, s, sFwd: s, point: anchor.point });
+      }
+      if (stops.length >= 3) this.busRoutes.push({ line: spec.line, steps, stops });
+    }
+  }
+
+  buildBusStops() {
+    for (const route of this.busRoutes) for (const spec of route.stops) {
+      const e = spec.edge, dir = spec.dir, sT = spec.s;
+      if (!e.busStops) e.busStops = [];
+      const kerb = e.width / 2;
+      const pl = RoadNetwork.pose(e, dir, sT, kerb + 1.4);
+      const stop = { edge: e, dir, s: sT, sFwd: sT, x: pl.x, z: pl.z, name: spec.name, line: route.line, kind: 'bus', waiting: 0, platforms: [] };
+      for (const off of [-4, 0, 4]) {
+        const at = sT + off;
+        const q = RoadNetwork.pose(e, dir, clamp(at, 0, e.len), kerb + 1.4);
+        stop.platforms.push({ x: q.x, z: q.z, yaw: wrapAngle(q.yaw - Math.PI / 2) });
+      }
+      e.busStops.push({ s: sT, stop });
+      this.busStops.push(stop);
+    }
+  }
+
+  nextBusMove(ai, nodeId, traffic) {
+    const route = ai.busRoute;
+    if (!route?.steps?.length) return null;
+    const i = ai.busRouteIndex ?? 0;
+    const cur = route.steps[i % route.steps.length];
+    if (cur.edge !== ai.edge || cur.dir !== ai.dir) return null;
+    const next = route.steps[(i + 1) % route.steps.length];
+    const turn = traffic.turnFor(ai, next.edge, next.dir, nodeId);
+    return { edge: next.edge, dir: next.dir, turn };
+  }
+
+  spawnBusNear(center, kind, avoidView = true) {
+    for (let r = 0; r < this.busRoutes.length; r++) {
+      const routeIndex = (this.nextBusRoute + r) % this.busRoutes.length;
+      const route = this.busRoutes[routeIndex];
+      for (let i = 0; i < route.steps.length; i++) {
+        const { edge, dir } = route.steps[i];
+        const p = RoadNetwork.pose(edge, dir, edge.len * 0.5);
+        const d = Math.hypot(p.x - center.x, p.z - center.z);
+        if (d < 150 || d > 360 || (avoidView && this.traffic.inView(p.x, p.z)) || this.traffic.occupied(p.x, p.z, 14)) continue;
+        const car = this.traffic.spawnAt(edge, dir, edge.len * 0.5, kind, 'bus');
+        if (!car) return null;
+        car.ai.busRoute = route;
+        car.ai.busRouteIndex = i;
+        car.ai.busLine = route.line;
+        car.busLine = route.line;
+        this.traffic.planNext(car.ai);
+        this.nextBusRoute = (routeIndex + 1) % this.busRoutes.length;
+        return car;
       }
     }
+    return null;
   }
 
   /** All stops (tram + bus) within r of a point. */
@@ -306,7 +398,7 @@ export class Transit {
     }
     for (const b of e.busStops) {
       const st = b.stop;
-      if (st.dir !== ai.dir || ai.busServed === st) continue;
+      if (st.dir !== ai.dir || st.line !== ai.busLine || ai.busServed === st) continue;
       const d = st.s - ai.s;
       if (d < -1 || d > 70) continue;
       stopAt(d, 0.2);
@@ -350,7 +442,7 @@ export class Transit {
       else buses++;
     }
     if (buses < BUSES[ctx.quality]) {
-      const car = tr.trySpawnNear(focus, 150, 320, true, busKind, 'bus');
+      const car = this.spawnBusNear(focus, busKind, true);
       if (car) {
         car.ai.transit = true;
         car.ai.v0f = 0.9;

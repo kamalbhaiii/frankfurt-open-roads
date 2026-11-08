@@ -124,7 +124,8 @@ export class RoadNetwork {
     if (from.edge === to.edge) {
       const forward = to.s >= from.s;
       if (forward || !(respectOneway && from.edge.oneway)) {
-        return { points: this.slice(from.edge, from.s, to.s), length: Math.abs(to.s - from.s) };
+        const dir = forward ? 1 : -1;
+        return { points: this.slice(from.edge, from.s, to.s), length: Math.abs(to.s - from.s), edges: Math.abs(to.s - from.s) > 0.01 ? [{ edge: from.edge, dir }] : [] };
       }
     }
     // virtual start: from the snapped point we can reach edge.b (forward) or edge.a (if two-way)
@@ -187,7 +188,15 @@ export class RoadNetwork {
     const points = startNode === fe.b ? this.slice(fe, from.s, fe.len) : this.slice(fe, from.s, 0);
     for (const m of chain) points.push(...RoadNetwork.path(m.edge, m.dir).slice(1));
     points.push(...(bestEnd === te.a ? this.slice(te, 0, to.s) : this.slice(te, te.len, to.s)).slice(1));
-    return { points, length: best };
+    const edges = [];
+    const append = (edge, dir) => {
+      const prev = edges[edges.length - 1];
+      if (!prev || prev.edge !== edge || prev.dir !== dir) edges.push({ edge, dir });
+    };
+    if ((startNode === fe.b && from.s < fe.len - 0.01) || (startNode === fe.a && from.s > 0.01)) append(fe, startNode === fe.b ? 1 : -1);
+    for (const m of chain) append(m.edge, m.dir);
+    if ((bestEnd === te.a && to.s > 0.01) || (bestEnd === te.b && to.s < te.len - 0.01)) append(te, bestEnd === te.a ? 1 : -1);
+    return { points, length: best, edges };
   }
 
   /** Polyline of an edge between distances s0 and s1 (either direction). */

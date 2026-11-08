@@ -423,8 +423,12 @@ export class Vehicle {
     }
     if (handbrake) brake = this.ud.mass / 22;
     if (this.dead) engine = 0;
-    const steerMax = lerp(0.6, 0.18, clamp(Math.abs(kmh) / 140, 0, 1));
-    this.steer = lerp(this.steer, -steerInput * steerMax, clamp(dt * 7, 0, 1));
+    // Near full steering lock is useful when parking, but makes the car twitchy
+    // at road speed. Reduce the wheel angle and steering response progressively.
+    const roadSpeed = Math.abs(kmh);
+    const steerMax = lerp(0.58, 0.105, clamp((roadSpeed - 8) / 92, 0, 1));
+    const steerRate = lerp(6.5, 3.2, clamp(roadSpeed / 100, 0, 1));
+    this.steer = lerp(this.steer, -steerInput * steerMax, clamp(dt * steerRate, 0, 1));
     if (this.body.translation().y < WATER_Y + 0.3) engine = 0;
     for (let i = 0; i < 4; i++) {
       vc.setWheelEngineForce(i, i >= 2 ? engine : 0); // rear-wheel drive
@@ -438,7 +442,9 @@ export class Vehicle {
     // automatic indicators while turning at low speed
     if (this.indicator !== 2) this.indicator = Math.abs(steerInput) > 0.5 && Math.abs(kmh) < 40 ? (steerInput < 0 ? -1 : 1) : 0;
     const lv = this.body.linvel();
-    const drag = 0.9 * Math.hypot(lv.x, lv.z);
+    // Rolling and aerodynamic resistance: enough to coast down naturally without
+    // acting like a permanent brake at motorway speed.
+    const drag = 0.035 + 0.014 * Math.hypot(lv.x, lv.z);
     this.body.applyImpulse({ x: -lv.x * drag * dt, y: 0, z: -lv.z * drag * dt }, true);
   }
 

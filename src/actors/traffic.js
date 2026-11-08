@@ -241,6 +241,10 @@ export class Traffic {
   chooseNext(ai) {
     const roads = ctx.roads;
     const nodeId = ai.dir > 0 ? ai.edge.b : ai.edge.a;
+    if (ai.role === 'bus' && ai.busRoute) {
+      const routed = this.transit.nextBusMove(ai, nodeId, this);
+      if (routed) return routed;
+    }
     const J = roads.junction(nodeId);
     const inLeg = J.byEdge.get(ai.edge.id);
     const opts = [];
@@ -265,6 +269,12 @@ export class Traffic {
     }
     if (!ai.edge.oneway) return { edge: ai.edge, dir: -ai.dir, turn: 'U' }; // dead end: turn round
     return null;
+  }
+
+  turnFor(ai, edge, dir, nodeId) {
+    const J = ctx.roads.junction(nodeId);
+    const inLeg = J.byEdge.get(ai.edge.id), out = J.byEdge.get(edge.id);
+    return inLeg && out ? turnKind(inLeg.bearing + Math.PI, out.bearing) : 'S';
   }
 
   /** Lateral position (right of travel) the vehicle aims for on (edge, dir, lane). */
@@ -1075,6 +1085,11 @@ export class Traffic {
       return;
     }
     const node = ai.dir > 0 ? ai.edge.b : ai.edge.a;
+    if (ai.busRoute) {
+      const nextIndex = (ai.busRouteIndex + 1) % ai.busRoute.steps.length;
+      const expected = ai.busRoute.steps[nextIndex];
+      if (expected?.edge === nxt.edge && expected.dir === nxt.dir) ai.busRouteIndex = nextIndex;
+    }
     ai.prevEdge = ai.edge;
     ai.prevTurn = nxt.turn;
     ai.jnNode = node;

@@ -358,6 +358,7 @@ export class Pedestrians {
       flee: 0,
       fleeYaw: 0,
       lat: 0.4,
+      avoidSide: rnd() < 0.5 ? -1 : 1,
       style: ch.pedStyle,
       lodDt: 0,
       lodSeed: Math.floor(rnd() * 4),
@@ -800,8 +801,28 @@ export class Pedestrians {
         }
       }
     } else sp = this.movePath(p, dt);
+    if (sp > 0.1 && p.mode !== 'cross') this.avoidCrowd(p, dt);
     p.lastSp = sp;
     return sp;
+  }
+
+  /** A gentle shoulder check and sidestep keeps walkers from marching through one another. */
+  avoidCrowd(p, dt) {
+    let push = 0;
+    const rightX = -Math.cos(p.yaw), rightZ = Math.sin(p.yaw);
+    for (const q of this.grid.query(p.x, p.z, 1.35)) {
+      if (q === p || q.leader === p || p.leader === q || q.down > 0) continue;
+      const dx = p.x - q.x, dz = p.z - q.z, d2 = dx * dx + dz * dz;
+      if (d2 < 0.01 || d2 > 1.82) continue;
+      const f = (1.35 - Math.sqrt(d2)) / 1.35;
+      const side = dx * rightX + dz * rightZ;
+      push += (Math.abs(side) > 0.12 ? Math.sign(side) : p.avoidSide) * f;
+    }
+    if (!push || !p.pts) return;
+    const m = this.meta[p.path];
+    const lo = m?.kind === 'plaza' ? -m.w / 2 + 0.5 : 0.18;
+    const hi = m?.kind === 'plaza' ? m.w / 2 - 0.5 : 1.15;
+    p.lat = clamp(p.lat + push * dt * 0.8, lo, hi);
   }
 
   moveIdle(p, dt) {
@@ -893,6 +914,12 @@ export class Pedestrians {
   }
 
   movePath(p, dt) {
+    p.pauseCooldown = Math.max(0, (p.pauseCooldown || 0) - dt);
+    if (p.pauseT > 0) {
+      p.pauseT = Math.max(0, p.pauseT - dt);
+      p.waitClip = p.style === 'business' ? ['phone', 'idle'] : ['idle', 'waiting'];
+      return 0;
+    }
     const pts = p.pts;
     let a = pts[p.i],
       b = pts[p.i + p.dir];
@@ -976,6 +1003,12 @@ export class Pedestrians {
           const mm = this.meta[j];
           p.lat = mm.kind === 'plaza' ? (rnd() - 0.5) * (mm.w - 1.4) : 0.25 + rnd() * 0.45;
         } else p.dir *= -1;
+        // People occasionally stop to check a phone, look into a shop, or orient
+        // themselves at the end of a block instead of moving at constant speed.
+        if (p.style !== 'jogger' && (p.pauseCooldown || 0) <= 0 && rnd() < (p.style === 'tourist' ? 0.2 : 0.08)) {
+          p.pauseT = 1.1 + rnd() * (p.style === 'tourist' ? 3.8 : 2.4);
+          p.pauseCooldown = 35 + rnd() * 55;
+        }
       }
       a = p.pts[p.i];
       b = p.pts[p.i + p.dir];
