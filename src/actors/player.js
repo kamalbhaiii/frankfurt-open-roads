@@ -31,6 +31,7 @@ export class Player {
     this.regenDelay = 0;
     this.speed = 0;
     this.prompt = '';
+    this.vehicleAction = null;
   }
 
   create(x, z, yaw) {
@@ -186,13 +187,38 @@ export class Player {
 
   step(dt) {
     if (this.dead && this.knockdown <= 0) return;
+    if (this.vehicleAction) {
+      if (this.vehicle) {
+        this.vehicle.idle();
+        // keep the hidden on-foot capsule clear of the car, or it rams the car every step
+        const p = this.vehicle.body.translation();
+        this.body.setNextKinematicTranslation({ x: p.x, y: p.y + 3, z: p.z });
+      }
+      return;
+    }
     if (this.vehicle) this.stepDriving(dt);
     else this.stepOnFoot(dt);
   }
 
   /** Per-frame: animations, health regen, being hit by cars, interaction prompt. */
   update(dt) {
-    if (!this.vehicle) this.ch.update(dt);
+    // The protagonist remains animated while parented to the driver's seat.
+    this.ch.update(dt);
+    if (this.vehicleAction) {
+      const a = this.vehicleAction;
+      a.t = Math.min(a.duration, a.t + dt);
+      const u = a.t / a.duration;
+      const ease = u * u * (3 - 2 * u);
+      this.ch.root.position.set(
+        a.from.x + (a.to.x - a.from.x) * ease,
+        a.from.y + (a.to.y - a.from.y) * ease,
+        a.from.z + (a.to.z - a.from.z) * ease,
+      );
+      if (u >= 1) {
+        this.vehicleAction = null;
+        this.ch.play(a.type === 'enter' ? 'sit' : 'idle', 0.18);
+      }
+    }
     if (this.dead) return;
     this.regenDelay -= dt;
     if (this.regenDelay <= 0 && this.health < MAX_HEALTH * 0.5) this.heal(dt * 2);
@@ -257,11 +283,16 @@ export class Player {
     car.ensureSpotlight();
     if (this.lastCar && this.lastCar !== car && this.lastCar.mode === 'parked') this.lastCar.persistent = false;
     this.vehicle = this.lastCar = car;
+    // the on-foot capsule must not collide with anything while driving
+    this.collider.setEnabled(false);
     ctx.scene.remove(this.ch.root);
     car.model.add(this.ch.root);
-    this.ch.root.position.set(0.38, car.ud.seatY + 0.2 - 0.98, car.ud.seatZ - 0.05);
+    const seat = { x: car.ud.seatX ?? 0.38, y: car.ud.seatY + 0.2 - 0.98, z: car.ud.seatZ - 0.05 };
+    const door = { x: car.width / 2 + 0.55, y: car.H0, z: seat.z };
+    this.ch.root.position.set(door.x, door.y, door.z);
     this.ch.root.rotation.set(0, 0, 0);
-    this.ch.play('sit', 0.1);
+    this.ch.play('walk', 0.08);
+    this.vehicleAction = { type: 'enter', t: 0, duration: 0.7, from: door, to: seat };
     events.emit('vehicle:enter', { car });
     return true;
   }
@@ -294,12 +325,24 @@ export class Player {
       ex = p.x - side.x;
       ez = p.z - side.z;
     }
-    this.body.setTranslation({ x: ex, y: Math.max(p.y, WATER_Y) + 0.5, z: ez }, true);
+    const exitY = Math.max(p.y, WATER_Y) + 0.5;
+    this.body.setTranslation({ x: ex, y: exitY, z: ez }, true);
     this.vy = 0;
+    car.model.updateWorldMatrix(true, false);
+    const worldSeat = this.ch.root.getWorldPosition(new THREE.Vector3());
     car.model.remove(this.ch.root);
     ctx.scene.add(this.ch.root);
+    this.ch.root.position.copy(worldSeat);
+    const exit = { x: ex, y: exitY - 0.87, z: ez };
+    this.ch.root.rotation.y = car.yaw;
+    this.vehicleAction = {
+      type: 'exit', t: 0, duration: 0.55,
+      from: { x: worldSeat.x, y: worldSeat.y, z: worldSeat.z }, to: exit,
+    };
+    this.ch.play('walk', 0.08);
     this.yaw = car.yaw;
     this.vehicle = null;
+    this.collider.setEnabled(true);
     car.mode = 'parked';
     car.siren = false;
     car.indicator = 0;

@@ -1186,7 +1186,7 @@ float winter = step(0.5, uSeason.y) * (1.0 - uSeason.x);
 float tr = step(fract(id * 5.37), uSeason.y * 0.8 + winter);
 vec3 c = mix(mix(uS0, uS1, fract(id * 3.17)), mix(uA0, uA1, fract(id * 2.3)), tr);
 diffuseColor.rgb = c * (0.3 + at.r * 1.15);
-diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88, 0.9, 0.94), uSnow * smoothstep(0.2, 0.9, normal.y + 0.3) * 0.8);`,
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88, 0.9, 0.94), uSnow * 0.55);`, // normal isn't declared yet at map_fragment
       );
   };
   m.customProgramCacheKey = () => 'veg-hedge';

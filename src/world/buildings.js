@@ -21,7 +21,7 @@
 import * as THREE from 'three';
 import { ctx } from '../core/context.js';
 import { area, openRing, hash, pip, segDist } from '../core/math.js';
-import { DISTRICTS, RC } from '../core/config.js';
+import { DISTRICTS, RC, roadWidth } from '../core/config.js';
 import { assets } from '../core/assets.js';
 import { uniforms } from './materials.js';
 
@@ -311,7 +311,9 @@ class FacadeBuilder {
     g.setAttribute('color', new THREE.BufferAttribute(new Uint8Array(this.c), 3, true));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
     g.setAttribute('aInfo', new THREE.BufferAttribute(new Uint8Array(this.inf), 4));
-    g.setAttribute('aWin', new THREE.Float16BufferAttribute(this.win, 4));
+    const hw = new Uint16Array(this.win.length);
+    for (let k = 0; k < hw.length; k++) hw[k] = THREE.DataUtils.toHalfFloat(this.win[k]);
+    g.setAttribute('aWin', new THREE.Float16BufferAttribute(hw, 4));
     g.setIndex(this.count > 65535 ? new THREE.Uint32BufferAttribute(this.i, 1) : new THREE.Uint16BufferAttribute(this.i, 1));
     g.computeBoundingSphere();
     g.computeBoundingBox();
@@ -562,7 +564,7 @@ function roadGrid(roads) {
   for (const r of roads) {
     const rc = RC[r.c];
     if (!rc || !r.pts || r.pts.length < 2) continue;
-    const hw = rc[0] / 2,
+    const hw = roadWidth(r) / 2,
       ped = rc[1] === 1;
     for (let i = 0; i < r.pts.length - 1; i++) {
       const a = r.pts[i],
@@ -581,12 +583,13 @@ function roadGrid(roads) {
   }
   return {
     /** Nearest road edge to (x, z): { d (distance to the carriageway edge), seg }. */
-    near(x, z) {
+    near(x, z, carRoadsOnly = false) {
       const l = grid.get(Math.floor(x / C) * 100003 + Math.floor(z / C));
       let best = null,
         bd = Infinity;
       if (l)
         for (const s of l) {
+          if (carRoadsOnly && s[5]) continue;
           const d = segDist(x, z, s[0], s[1], s[2], s[3]) - s[4];
           if (d < bd) {
             bd = d;
@@ -594,6 +597,40 @@ function roadGrid(roads) {
           }
         }
       return { d: bd, seg: best };
+    },
+    /** Exact footprint/road-buffer intersection check, including narrow crossings. */
+    overlaps(ring) {
+      let minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
+      for (const [x, z] of ring) { minx = Math.min(minx, x); maxx = Math.max(maxx, x); minz = Math.min(minz, z); maxz = Math.max(maxz, z); }
+      const candidates = new Set();
+      for (let gx = Math.floor(minx / C); gx <= Math.floor(maxx / C); gx++) {
+        for (let gz = Math.floor(minz / C); gz <= Math.floor(maxz / C); gz++) {
+          for (const seg of grid.get(gx * 100003 + gz) || []) candidates.add(seg);
+        }
+      }
+      const cross = (ax, az, bx, bz, cx, cz, dx, dz) => {
+        const orient = (x1, z1, x2, z2, x3, z3) => (x2 - x1) * (z3 - z1) - (z2 - z1) * (x3 - x1);
+        const a = orient(ax, az, bx, bz, cx, cz), b = orient(ax, az, bx, bz, dx, dz);
+        const c = orient(cx, cz, dx, dz, ax, az), d = orient(cx, cz, dx, dz, bx, bz);
+        const boxesOverlap = Math.max(Math.min(ax, bx), Math.min(cx, dx)) <= Math.min(Math.max(ax, bx), Math.max(cx, dx)) &&
+          Math.max(Math.min(az, bz), Math.min(cz, dz)) <= Math.min(Math.max(az, bz), Math.max(cz, dz));
+        return boxesOverlap && a * b <= 0 && c * d <= 0;
+      };
+      for (const s of candidates) {
+        if (pip(s[0], s[1], ring) || pip(s[2], s[3], ring) || pip((s[0] + s[2]) / 2, (s[1] + s[3]) / 2, ring)) return true;
+        for (let i = 0; i < ring.length; i++) {
+          const a = ring[i], b = ring[(i + 1) % ring.length];
+          if (cross(s[0], s[1], s[2], s[3], a[0], a[1], b[0], b[1])) return true;
+          const d = Math.min(
+            segDist(s[0], s[1], a[0], a[1], b[0], b[1]).d,
+            segDist(s[2], s[3], a[0], a[1], b[0], b[1]).d,
+            segDist(a[0], a[1], s[0], s[1], s[2], s[3]).d,
+            segDist(b[0], b[1], s[0], s[1], s[2], s[3]).d,
+          );
+          if (d < s[4] + 0.45) return true;
+        }
+      }
+      return false;
     },
   };
 }
@@ -704,7 +741,7 @@ vec3 roomColor(vec2 p, vec3 Vt, float rw, float rh, float rd, float rs, int rt, 
   } else {
     c = vec3(0.9);
     if (lit > 0.0) {
-      if (rt >= 1) c += 3.0 * step(0.55, fract(hp.z / 1.8)) * step(abs(fract(hp.x / 1.5) - 0.5), 0.14);
+      if (rt >= 1) c += 1.2 * step(0.55, fract(hp.z / 1.8)) * step(abs(fract(hp.x / 1.5) - 0.5), 0.14);
       else c += 4.0 * smoothstep(0.4, 0.0, length(vec2(hp.x, hp.z + rd * 0.5)));
     }
   }
@@ -895,7 +932,7 @@ vec3 facade(vec3 wallCol, vec3 tint, vec3 Vt, int kind, int layer, int style, bo
   #endif
   if (garden) { vec2 q = floor(vec2(bp.x * 3.0 + cid * 2.0, y * 2.0)); inter = vec3(0.12, 0.3, 0.1) * (0.5 + h21(q)) * 2.0; }
   float dayK = room == 2 ? 0.45 : (garden ? 0.5 : 0.13);
-  float litK = room == 2 ? 1.4 : lit * 1.15;
+  float litK = room == 2 ? 1.1 : lit * (office ? 0.5 : 1.0);
   vec3 gEm = inter * dayK * (1.0 - night) + inter * litK * night * (room == 2 ? vec3(1.0, 0.88, 0.7) : litCol) + inter * 0.01;
   vec3 gc = glassTint;
   c = mix(gc, coverCol, cover);
@@ -1181,6 +1218,9 @@ export function buildBuildings(data, phys, buildingIndex) {
     const A = area(ring);
     if (Math.abs(A) < 4) return;
     if (A < 0) ring = ring.slice().reverse();
+    // A robust segment-to-polygon test catches long roads crossing a footprint,
+    // even when no sampling point lands inside the overlap.
+    if (roads.overlaps(ring)) return;
     buildingIndex.add(ring);
     let cx = 0,
       cz = 0;

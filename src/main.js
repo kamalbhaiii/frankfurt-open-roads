@@ -8,7 +8,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { ctx } from './core/context.js';
 import { QUALITY, RC, isCarRoad, roadWidth, DISTRICTS } from './core/config.js';
-import { settings } from './core/settings.js';
+import { settings, keyName } from './core/settings.js';
 import { input } from './core/input.js';
 import { events } from './core/events.js';
 import { rnd, pip } from './core/math.js';
@@ -19,7 +19,7 @@ import { Physics } from './world/physics.js';
 import { Furniture } from './world/furniture.js';
 import { Environment } from './world/environment.js';
 import { RoadNetwork } from './world/roadNetwork.js';
-import { VehicleManager, pickKind } from './actors/vehicles.js';
+import { VehicleManager, pickKind, sharedHeadlight } from './actors/vehicles.js';
 import { Traffic } from './actors/traffic.js';
 import { Pedestrians } from './actors/pedestrians.js';
 import { Player } from './actors/player.js';
@@ -28,6 +28,7 @@ import { WantedSystem } from './gameplay/wanted.js';
 import { Stats } from './gameplay/stats.js';
 import { Blips, Markers } from './gameplay/markers.js';
 import { MissionRunner } from './gameplay/missions.js';
+import { Depots } from './gameplay/jobs.js';
 import { Services } from './gameplay/services.js';
 import { Gps } from './gameplay/gps.js';
 import { CameraRig } from './gameplay/cameraRig.js';
@@ -40,6 +41,8 @@ import { Minimap } from './ui/minimap.js';
 import { MapRenderer } from './ui/mapRenderer.js';
 import { MapScreen } from './ui/mapScreen.js';
 import { Menus } from './ui/menus.js';
+import { Phone } from './ui/phone.js';
+import { randomPerson, policeOfficer } from './actors/characters.js';
 import { assets } from './core/assets.js';
 import { RenderPipeline, detectQuality } from './world/renderPipeline.js';
 
@@ -170,6 +173,7 @@ async function boot() {
     ctx.physics.build(cityResult);
     ctx.furniture = new Furniture();
     ctx.furniture.build();
+    ctx.physics.streamStatics();
 
     stage(0.72, 'Mapping the road network');
     await yieldFrame();
@@ -210,9 +214,13 @@ async function boot() {
     ctx.services.build();
     ctx.missions = new MissionRunner();
     ctx.missions.setupWorld();
+    ctx.depots = new Depots();
+    ctx.depots.build();
     ctx.hud = new Hud();
     ctx.hud.minimap = new Minimap(document.getElementById('minimap'), mapRenderer);
     ctx.menus = new Menus();
+    ctx.phone = new Phone();
+    ctx.phone.build();
 
     stage(0.9, 'Loading textures');
     await assets.ready((p) => stage(0.9 + p * 0.05, 'Loading textures'));
@@ -220,7 +228,7 @@ async function boot() {
     stage(0.96, 'Compiling shaders');
     await yieldFrame();
     ctx.pipeline = new RenderPipeline(ctx.renderer, ctx.scene, ctx.camera);
-    ctx.renderer.compile(ctx.scene, ctx.camera);
+    await warmUpShaders();
     input.attach(ctx.renderer.domElement);
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) input.setupTouch(document.getElementById('touch'));
     events.on('settings:changed', ({ key, value }) => {
@@ -239,6 +247,49 @@ async function boot() {
   }
 }
 
+/**
+ * Compiles every shader the game can need before play starts. Without this the GPU compiles
+ * a shader the first time something new appears (a police car, rain, a vehicle type), which
+ * freezes the game for up to several hundred milliseconds in the middle of driving.
+ */
+async function warmUpShaders() {
+  const { scene, camera, renderer } = ctx;
+  sharedHeadlight(); // must exist before compiling: the light count is part of every shader
+  const s = ctx.spawn;
+  camera.position.set(s.x, 30, s.z + 60);
+  camera.lookAt(s.x, 0, s.z);
+  // one of every vehicle kind and character type, briefly placed in view
+  const temps = Object.keys(ctx.models)
+    .filter((k) => k.startsWith('car_'))
+    .map((k, i) => ctx.vehicles.spawn(k.slice(4), s.x + (i % 6) * 7, s.z + 20 + Math.floor(i / 6) * 9, 0, 'parked', { driver: false }));
+  const people = [randomPerson(), randomPerson(), policeOfficer()];
+  people.forEach((ch, i) => {
+    ch.root.position.set(s.x + i * 2, 0, s.z + 10);
+    scene.add(ch.root);
+    ch.play('walk', 0);
+    ch.update(0.1);
+  });
+  for (const v of temps) {
+    v.siren = true;
+    v.indicator = 2;
+    v.sync(0.016, camera.position, 1, false);
+  }
+  // effects that are normally hidden (rain, snow, smoke, markers …)
+  const hidden = [];
+  scene.traverse((o) => {
+    if (!o.visible) {
+      hidden.push(o);
+      o.visible = true;
+    }
+  });
+  if (renderer.compileAsync) await renderer.compileAsync(scene, camera);
+  else renderer.compile(scene, camera);
+  ctx.pipeline.render(); // post-processing passes + shadow-map variants
+  for (const o of hidden) o.visible = false;
+  for (const v of temps) ctx.vehicles.remove(v);
+  for (const ch of people) ctx.peds.reclaim(ch);
+}
+
 function showTitle() {
   ctx.game.state = 'title';
   ctx.menus.showTitle({
@@ -249,7 +300,7 @@ function showTitle() {
         setTimeout(
           () =>
             events.emit('help', {
-              text: 'Welcome to Frankfurt. Find <b>Lena</b> at the yellow <b>L</b> on your map (press <b>M</b>) to start your first job. Press <b>F</b> next to a car to get in.',
+              text: `Welcome to Frankfurt. Earn money with jobs: taxi, bus, tow truck, ambulance (depots on the map, <b>M</b>) or Uber in your phone (<b>${keyName(settings.get('bindings').phone[0])}</b>). Press <b>F</b> next to a car to get in.`,
               ms: 9000,
             }),
           1200,
@@ -275,6 +326,7 @@ function startPlaying(setup) {
 
 /** One frame of game logic; render=false lets tests advance the simulation quickly. */
 function frame(raw, render = true) {
+  const t0 = performance.now();
   const { camera } = ctx;
   uniforms.uTime.value += raw;
   input.pollGamepad(raw);
@@ -298,6 +350,9 @@ function frame(raw, render = true) {
       ctx.missions.update(dt);
       ctx.markers.update(dt);
       ctx.services.update(dt);
+      ctx.depots.update(dt);
+      ctx.physics.updateStream(dt, player.position);
+      ctx.phone.update(dt);
       ctx.gps.update(dt);
       ctx.stats.add('playTime', raw);
       ctx.cameraRig.update(raw);
@@ -310,7 +365,7 @@ function frame(raw, render = true) {
   }
   ctx.furniture.cull(camera.position);
   if (render) {
-    ctx.pipeline.update(raw);
+    ctx.pipeline.update(raw, (performance.now() - t0) / 1000);
     ctx.pipeline.render();
   }
   input.endFrame();
@@ -319,10 +374,19 @@ function frame(raw, render = true) {
 function startLoop() {
   const clock = new THREE.Clock();
   let fpsT = 0,
-    frames = 0;
+    frames = 0,
+    failed = false;
   ctx.renderer.setAnimationLoop(() => {
+    if (failed) return;
     const raw = Math.min(clock.getDelta(), 0.1);
-    frame(raw);
+    try {
+      frame(raw);
+    } catch (e) {
+      failed = true;
+      ctx.renderer.setAnimationLoop(null);
+      console.error('[game] frame failed', e);
+      showRuntimeError(e);
+    }
     frames++;
     fpsT += raw;
     if (fpsT > 1) {
@@ -340,6 +404,15 @@ function startLoop() {
       for (let t = 0; t < seconds; t += step) frame(step, false);
     },
   };
+}
+
+function showRuntimeError(error) {
+  const panel = document.createElement('pre');
+  panel.setAttribute('role', 'alert');
+  panel.style.cssText =
+    'position:fixed;z-index:100000;inset:12px 12px auto;padding:14px 18px;max-height:45vh;overflow:auto;background:#241b18;color:#fff;border:1px solid #e26a48;border-radius:8px;font:13px/1.45 monospace;white-space:pre-wrap;';
+  panel.textContent = `The game stopped after an unexpected error. Please save this message when reporting the crash:\n${error?.stack || error?.message || String(error)}`;
+  document.body.append(panel);
 }
 
 boot();

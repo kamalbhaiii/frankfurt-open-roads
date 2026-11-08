@@ -71,7 +71,7 @@ export const QUALITY = {
     shadowDistance: 0, // metres covered by the shadow cascades
     shadowRadius: 1, // PCF filter radius (soft penumbra)
     pr: 1,
-    minScale: 0.6, // adaptive resolution: lowest fraction of `pr`
+    minScale: 0.5, // let low-end GPUs trade pixel sharpness for a steadier frame rate
     targetFps: 50,
     post: false, // HDR post chain (bloom, grade, haze, AA); off = one direct render
     bloom: 0, // bloom strength (0 = off)
@@ -89,8 +89,8 @@ export const QUALITY = {
     trees: 0.35,
     rain: 2500,
     far: 2600,
-    traffic: 14,
-    peds: 30,
+    traffic: 13,
+    peds: 33,
     lampLights: 4,
     furnitureDistance: 260,
     carDistance: 250,
@@ -121,8 +121,8 @@ export const QUALITY = {
     trees: 0.7,
     rain: 5000,
     far: 3800,
-    traffic: 26,
-    peds: 60,
+    traffic: 24,
+    peds: 66,
     lampLights: 8,
     furnitureDistance: 380,
     carDistance: 340,
@@ -153,8 +153,8 @@ export const QUALITY = {
     trees: 1,
     rain: 8000,
     far: 5200,
-    traffic: 34,
-    peds: 80,
+    traffic: 31,
+    peds: 88,
     lampLights: 12,
     furnitureDistance: 520,
     carDistance: 420,
@@ -185,8 +185,8 @@ export const QUALITY = {
     trees: 1.3,
     rain: 10000,
     far: 6500,
-    traffic: 44,
-    peds: 110,
+    traffic: 40,
+    peds: 121,
     lampLights: 16,
     furnitureDistance: 700,
     carDistance: 520,

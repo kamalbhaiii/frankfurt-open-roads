@@ -68,7 +68,10 @@ export class Emitter {
   }
 
   detach(fade = 0.08) {
-    if (!this.src) return;
+    if (!this.src) {
+      this.owner = null;
+      return;
+    }
     const s = this.src,
       t = this.ac.currentTime;
     this.gain.gain.cancelScheduledValues(t);

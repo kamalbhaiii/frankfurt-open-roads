@@ -19,6 +19,7 @@ import { Radio } from './radio.js';
 import { SoundBank } from './sounds.js';
 import { Emitter, OneShots, setListener } from './spatial.js';
 import { CityAmbience, posOf } from './ambience.js';
+import { VoiceDirector } from './voices.js';
 
 /** Engine character per vehicle kind. idle/max rpm, which loops, pitch and tone. */
 const ENGINES = {
@@ -35,6 +36,7 @@ export class AudioManager {
     this.ac = null;
     this.ready = false;
     this._crash = null;
+    this.voice = new VoiceDirector();
     // Listeners registered before Game.wireEvents, so they run before game.onCrash → crash().
     events.on('vehicle:crash', ({ car }) => {
       this._crash = car;
@@ -188,6 +190,7 @@ export class AudioManager {
   /** Mutes gameplay audio while paused (UI and radio keep playing). */
   setPaused(p) {
     if (!this.ready) return;
+    if (p) this.voice.stop();
     const t = this.ac.currentTime;
     this.buses.sfx.gain.setTargetAtTime(p ? 0 : settings.get('sfxVolume'), t, 0.05);
     this.buses.ambient.gain.setTargetAtTime(p ? 0 : settings.get('ambientVolume'), t, 0.05);
@@ -323,6 +326,10 @@ export class AudioManager {
     for (const v of this.npc) {
       if (!v.src || !v.owner) continue;
       const p = posOf(v.owner);
+      if (!p) {
+        v.detach(0.12);
+        continue;
+      }
       const d = v.place(p.x, p.y, p.z, lp, dt);
       const kmh = Math.abs(v.owner.kmh || 0);
       const diesel = engineFor(v.owner) === 'diesel';
@@ -334,6 +341,10 @@ export class AudioManager {
     for (const v of this.sirens) {
       if (!v.src || !v.owner) continue;
       const p = posOf(v.owner);
+      if (!p) {
+        v.detach(0.12);
+        continue;
+      }
       const d = v.place(p.x, p.y + 1.5, p.z, lp, dt);
       nearestSiren = Math.min(nearestSiren, d);
       v.src.playbackRate.setTargetAtTime(v.rate * v.doppler, t, 0.05);
@@ -411,6 +422,7 @@ export class AudioManager {
       }
     }
     if (!paused) this.updateWorld(dt, lp, player);
+    if (!paused) this.voice.update(dt);
     if (this.ambience.running) this.ambience.update(paused ? 0 : dt, lp, { inCar, interior });
     else this.city.gain.gain.setTargetAtTime(0.03 + 0.03 * (ctx.env?.dayFactor ?? 1), t, 1);
     this.radio.setActive(!!car && !paused);

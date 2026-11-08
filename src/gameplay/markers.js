@@ -9,7 +9,12 @@ import { ctx } from '../core/context.js';
 export const BLIP_STYLES = {
   player: { color: '#ffffff', label: 'You' },
   waypoint: { color: '#c86bff', glyph: '◆', label: 'Waypoint' },
-  story: { color: '#f3c544', glyph: 'L', label: 'Story mission' },
+  busdepot: { color: '#e5484d', glyph: 'B', label: 'Bus depot (job)' },
+  taxirank: { color: '#f3c544', glyph: 'T', label: 'Taxi rank (job)' },
+  courierdepot: { color: '#c9a36b', glyph: 'C', label: 'Courier depot (job)' },
+  ambulancedepot: { color: '#ffffff', glyph: '+', label: 'Ambulance station (job)' },
+  towdepot: { color: '#f0a020', glyph: 'A', label: 'Tow service (job)' },
+  scooterdepot: { color: '#06c167', glyph: 'E', label: 'Delivery scooter (Uber Eats)' },
   objective: { color: '#f3c544', glyph: '●', label: 'Objective' },
   vehicle: { color: '#4fb3ff', glyph: '▲', label: 'Mission vehicle' },
   race: { color: '#ffffff', glyph: '⚑', label: 'Street race' },

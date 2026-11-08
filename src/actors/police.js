@@ -124,6 +124,19 @@ export class Police {
       }
       const p = car.body.translation();
       const dist = Math.hypot(p.x - focus.x, p.z - focus.z);
+      // wrecked units drop out (out of sight) so a fresh unit can be sent
+      if (car.dead && !u.leaving) {
+        u.deadT = (u.deadT || 0) + dt;
+        if (u.officer) this.updateOfficer(u, dt);
+        else car.idle();
+        if (u.deadT > 4 && (dist > 60 || !ctx.traffic.inView(p.x, p.z))) {
+          car.siren = false;
+          car.persistent = false;
+          if (u.officer) this.returnOfficer(u);
+          this.units.splice(this.units.indexOf(u), 1);
+        }
+        continue;
+      }
       if (u.leaving) {
         u.leaveT += dt;
         this.driveTo(u, p.x + Math.sin(car.yaw) * 60, p.z + Math.cos(car.yaw) * 60, 40, dt);
@@ -155,14 +168,22 @@ export class Police {
           u.routeT = 1.5;
           u.route = ctx.roads.route(p.x, p.z, focus.x, focus.z, false);
         }
-        const look = this.lookahead(u.route, p, 10 + Math.abs(car.kmh) * 0.15);
+        // short lookahead keeps the car on the carriageway instead of cutting across pavements
+        const look = this.lookahead(u.route, p, 6 + Math.abs(car.kmh) * 0.08);
+        const far = this.lookahead(u.route, p, 28 + Math.abs(car.kmh) * 0.2);
+        if (look && far) {
+          const turn = Math.abs(wrapAngle(Math.atan2(far[0] - look[0], far[1] - look[1]) - car.yaw));
+          u.cornerKmh = 120 - 85 * clamp(turn / 1.2, 0, 1);
+        } else u.cornerKmh = 120;
         if (look) {
           tx = look[0];
           tz = look[1];
         }
       }
       const playerSlow = player.vehicle ? Math.abs(player.vehicle.kmh) < 6 : true;
-      const maxKmh = dist < 20 && playerSlow ? 10 : 140;
+      // drive only a little faster than the player: flat-out city pursuits end in wrecks
+      const playerKmh = player.vehicle ? Math.abs(player.vehicle.kmh || 0) : 0;
+      const maxKmh = dist < 20 && playerSlow ? 10 : Math.min(u.cornerKmh ?? 120, Math.max(65, playerKmh + 25));
       this.driveTo(u, tx, tz, maxKmh, dt);
       if (player.vehicle && dist < 7 && playerSlow) closeForArrest = true;
       // on foot and close: officer gets out

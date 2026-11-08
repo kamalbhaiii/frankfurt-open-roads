@@ -8,11 +8,10 @@
 //   * Materials: body_vc (vertex-coloured opaque body incl. interior), glass, headlight, taillight,
 //     indicator_L, indicator_R, optional siren / taxi_sign, wheel_vc, plate (UV 0..1 per plate, the game
 //     paints a German number plate atlas onto it), optional decal (UVs into the per-model lettering atlas
-//     described by userData.decals), body_lod_vc (far LOD).
+//     described by userData.decals).
 //   * Root userData: {type, label, length, width, height, wheelRadius, mass, sill, power, paint, seatY, seatZ}
-//     plus seatX, category, drivable, decals, lodDistance hints.
-//   * Node 'lod0' holds the detailed meshes, node 'lod1' a single-draw-call far version (wheels included);
-//     the game switches them by distance and hides the wheel pivots while lod1 is shown.
+//     plus seatX (driver seat x), category, drivable, decals, sirenColors, physTrack (scooter: raycast wheel track).
+//   * All meshes live under the child node 'lod0'.
 //
 // Vertex colours are RGBA: rgb = linear colour, a = material class / 15 (see CLS) so a single mesh can hold
 // paint (clear-coated + metallic flakes at runtime), chrome, gloss/matte plastics, rubber, interior and lamps.
@@ -30,7 +29,6 @@ await MeshoptSimplifier.ready;
 const { clamp, lerp } = THREE.MathUtils;
 const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const smax = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; return Math.max(a, b) + h * h * k * 0.25; };
-const smin = (a, b, k) => -smax(-a, -b, k);
 
 /** Material classes stored in vertex-colour alpha (a = cls / 15). Keep in sync with src/actors/vehicles.js. */
 export const CLS = { matte: 0, paint: 1, chrome: 2, gloss: 3, rubber: 4, interior: 5, head: 6, tail: 7, ind: 8, siren: 9, sign: 10, metal: 11, darkglass: 12, reverse: 13 };
@@ -372,8 +370,6 @@ const LIGHT_MATS = {
   siren: () => std('siren', 0x1030ff, { emissive: 0x2050ff, emissiveIntensity: 0.4, roughness: 0.2, transparent: true, opacity: 0.9 }),
   taxi_sign: () => std('taxi_sign', 0xfff3b0, { emissive: 0xffd24a, emissiveIntensity: 0.6, roughness: 0.3 }),
 };
-const LIGHT_CLS = { headlight: CLS.head, taillight: CLS.tail, indicator_L: CLS.ind, indicator_R: CLS.ind, siren: CLS.siren, taxi_sign: CLS.sign };
-const LIGHT_COL = { headlight: 0xd3dbe2, taillight: 0x8a0a0a, indicator_L: 0xc9740f, indicator_R: 0xc9740f, siren: 0x1d3cff, taxi_sign: 0xfff3b0 };
 
 // ------------------------------------------------------------------------------------------------
 // WHEELS (one vertex-coloured mesh per wheel; axle along X)
@@ -420,14 +416,13 @@ export const DECAL_ROWS = 8;
  * s.details(X) adds overlays through the X helpers. Returns the THREE.Group following the contract.
  */
 function build(s) {
-  const bodies = s.bodies(s);
-  const fU = (x, y, z) => { let v = Infinity; for (const b of bodies) v = Math.min(v, b.B.f(x, y, z)); return v; };
+  const bodies = s.bodies ? s.bodies(s) : [];
+  const fU = (x, y, z) => { let v = 1; for (const b of bodies) v = Math.min(v, b.B.f(x, y, z)); return v; };
   const palette = { ...BASE_PARTS, paint: [s.color, CLS.paint], ...(s.parts || {}) };
   const rgba = (part) => { const c = Array.isArray(part) ? part : palette[part]; if (!c) throw new Error('unknown part ' + part); return c.length === 4 ? c : col(c[0], c[1]); };
-  const bodyGeos = [], lightGeos = {}, glassGeos = [], plateGeos = [], decalGeos = [], lodGeos = [];
+  const bodyGeos = [], lightGeos = {}, glassGeos = [], plateGeos = [], decalGeos = [];
   const add = (g, part) => bodyGeos.push(paintGeo(prep(g), rgba(part)));
   const addLight = (g, mat) => (lightGeos[mat] ||= []).push(prep(g));
-  const addLod = (g, part) => lodGeos.push(paintGeo(prep(g), rgba(part)));
   for (const b of bodies) {
     const h = b.cell ?? s.cell ?? 0.016;
     const M = nets(b.B.f, b.b0, b.b1, h);
@@ -439,20 +434,9 @@ function build(s) {
       else if (LIGHT_MATS[name]) addLight(g, name);
       else add(g, name);
     }
-    // far LOD: coarse mesh, per-vertex colours (glass dark, lamps keep their class so they glow at night)
-    const L = nets(b.B.f, b.b0, b.b1, b.lodCell ?? s.lodCell ?? 0.06), nv = L.P.length / 3, A = new Float32Array(nv * 4);
-    for (let v = 0; v < nv; v++) {
-      const x = L.P[v * 3], y = L.P[v * 3 + 1], z = L.P[v * 3 + 2];
-      let r = 0; for (; r < b.regions.length; r++) if (b.regions[r].g(x, y, z, L.N[v * 3], L.N[v * 3 + 1], L.N[v * 3 + 2]) < 0) break;
-      const name = r < b.regions.length ? b.regions[r].part : b.def ?? 'paint';
-      A.set(name === 'glass' ? col(0x1a2026, CLS.darkglass) : LIGHT_MATS[name] ? col(LIGHT_COL[name], LIGHT_CLS[name]) : name === 'void' ? col(0x111111, 0) : rgba(name), v * 4);
-    }
-    const lg = simplify({ P: L.P, N: L.N, I: L.I }, s.lodErr ?? 0.015, false, A, [0.6, 0.6, 0.6, 2]);
-    lg.setAttribute('color', new THREE.Float32BufferAttribute(lg.userData.attr, 4));
-    lodGeos.push(lg);
   }
   const X = {
-    s, f: fU, bodies, B: bodies[0].B, add, addLight, addLod, palette, rgba,
+    s, f: fU, bodies, B: bodies[0]?.B, add, addLight, palette, rgba,
     glass: (g) => glassGeos.push(prep(g)),
     cast: (o, d, max) => cast(fU, o, d, max),
     /** surface point seen from the side (sx = +1 left / -1 right) at (y, z) */
@@ -465,6 +449,7 @@ function build(s) {
       add(rb(0.54, 0.125, 0.02, 0.005, x, y, z - end * 0.008), 'black');
       plateGeos.push(quadUV([x, y, z + end * 0.0025], [0, 0, end], 0.52, 0.11, end > 0 ? [0, 0.5, 1, 1] : [0, 0, 1, 0.5]));
     },
+    plateAt: (end, x, y, z) => { add(rb(0.54, 0.125, 0.02, 0.005, x, y, z - end * 0.008), 'black'); plateGeos.push(quadUV([x, y, z + end * 0.0025], [0, 0, end], 0.52, 0.11, end > 0 ? [0, 0.5, 1, 1] : [0, 0, 1, 0.5])); },
     /** lettering decal (text drawn at runtime into the model's decal atlas; row = index in s.decals) */
     decal: (row, p, n, w, h, up) => { const uw = Math.min(1, w / h / 8); decalGeos.push(quadUV(p, n, w, h, [0.5 - uw / 2, 1 - (row + 1) / DECAL_ROWS, 0.5 + uw / 2, 1 - row / DECAL_ROWS], up)); },
     /** decal glued on the side surface (sx side) centred at (y, z) */
@@ -487,27 +472,23 @@ function build(s) {
   // ---------------- assemble ----------------
   const car = new THREE.Group(); car.name = 'car_' + s.id;
   const lod0 = new THREE.Group(); lod0.name = 'lod0';
-  const lod1 = new THREE.Group(); lod1.name = 'lod1';
   const body = new THREE.Mesh(mergeGeometries(bodyGeos), std('body_vc', 0xffffff, { vertexColors: true, roughness: 0.5, metalness: 0.1 })); body.name = 'body'; lod0.add(body);
   if (glassGeos.length) { const gl = new THREE.Mesh(mergeGeometries(glassGeos), std('glass', 0x0b1219, { roughness: 0.03, metalness: 0.2, transparent: true, opacity: 0.6 })); gl.name = 'glass'; lod0.add(gl); }
-  for (const [m, gs] of Object.entries(lightGeos)) { const mesh = new THREE.Mesh(mergeGeometries(gs), LIGHT_MATS[m]()); mesh.name = m; lod0.add(mesh); }
+  for (const [m, gs] of Object.entries(lightGeos)) { const mat = LIGHT_MATS[m](); if (m === 'siren' && s.ud?.sirenColors) { mat.color.setHex(s.ud.sirenColors[0]); mat.emissive.setHex(s.ud.sirenColors[0]); } const mesh = new THREE.Mesh(mergeGeometries(gs), mat); mesh.name = m; lod0.add(mesh); }
   if (plateGeos.length) { const pm = new THREE.Mesh(mergeGeometries(plateGeos), std('plate', 0xf2f2ee, { roughness: 0.35 })); pm.name = 'plate'; lod0.add(pm); }
   if (decalGeos.length) { const dm = new THREE.Mesh(mergeGeometries(decalGeos), std('decal', 0xffffff, { roughness: 0.4, transparent: true, alphaTest: 0.5 })); dm.name = 'decal'; lod0.add(dm); }
-  const wGeo = wheelGeo(s), wlGeo = wheelGeo(s, 1);
+  const wGeo = wheelGeo(s);
   const wMat = std('wheel_vc', 0xffffff, { vertexColors: true, roughness: 0.5, metalness: 0.3 });
   const wx = s.wheelX ?? s.W / 2 - s.tyreW / 2 - 0.04;
   const wheels = s.wheels ?? [['wheel_FL', wx, s.axles[0]], ['wheel_FR', -wx, s.axles[0]], ['wheel_RL', wx, s.axles[1]], ['wheel_RR', -wx, s.axles[1]], ...(s.extraWheels?.(wx) || [])];
   for (const [n, x, z] of wheels) {
     const wg = new THREE.Group(); wg.name = n; wg.position.set(x, s.r, z);
     const wm = new THREE.Mesh(wGeo, wMat); wm.name = n + '_mesh'; if (x < 0) wm.rotation.y = Math.PI; wg.add(wm); car.add(wg);
-    const lw = wlGeo.clone(); if (x < 0) lw.rotateY(Math.PI); lw.translate(x, s.r, z); lodGeos.push(lw);
   }
-  const lm = new THREE.Mesh(mergeGeometries(lodGeos.map((g) => { for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'color'].includes(k)) g.deleteAttribute(k); return g; })), std('body_lod_vc', 0xffffff, { vertexColors: true, roughness: 0.55, metalness: 0.05 }));
-  lm.name = 'body_lod'; lod1.add(lm);
-  car.add(lod0, lod1);
+  car.add(lod0);
   car.userData = {
     type: s.id, label: s.label, category: s.category ?? 'car', drivable: s.drivable !== false, length: s.L, width: s.W, height: s.H, wheelRadius: s.r, mass: s.mass,
-    sill: s.sillUD ?? 0.3, power: s.power ?? 1, paint: s.color, seatX: s.seatX ?? 0.38, seatY: s.seatY ?? 0.52, seatZ: s.seatZ ?? 0, decals: s.decals || [], ...(s.ud || {}),
+    sill: s.sillUD ?? 0.3, power: s.power ?? 1, paint: s.color, seatX: s.seatX ?? 0.38, seatY: s.seatY ?? (s.interior ? s.interior.seatY - 0.135 : 0.52), seatZ: s.seatZ ?? (s.interior ? s.interior.seatZ - 0.04 : 0), decals: s.decals || [], ...(s.ud || {}),
   };
   return car;
 }
@@ -550,7 +531,6 @@ function interior(X, o) {
 
 // ------------------------------------------------------------------------------------------------
 // PASSENGER CARS
-const mirrorX = (fn) => (x, y, z, ...n) => fn(Math.abs(x), y, z, ...n);
 /** Standard car body: SDF definition + region list from the spec's profile/section/lamp/window data. */
 function carBody(s) {
   const F = s.L / 2, R = -s.L / 2, p = s.p;
@@ -570,8 +550,8 @@ function carBody(s) {
     for (const q of w.pillars || []) g = smax(g, q.w - Math.abs(z - q.z - (q.slant ?? 0) * (y - p.beltY)), 0.02);
     return Math.max(g, (0.3 - Math.abs(nx)) * 0.3);
   };
-  const gWs = (x, y, z, nx, ny, nz) => Math.max(smax(p.cowlY + (w.wsBot ?? 0.03) - y, w.wsZ - z, 0.02), Math.abs(x) - (hwS(x, y, z) - w.pw), -z, (0.15 - nz) * 0.3);
-  const gRw = (x, y, z, nx, ny, nz) => Math.max(smax(w.rwBot - y, z - w.rwZ, 0.02), Math.abs(x) - (hwS(x, y, z) - (w.pwR ?? w.pw)), z, (0.15 + nz) * 0.3);
+  const gWs = (x, y, z, nx, ny, nz) => Math.max(smax(p.cowlY + (w.wsBot ?? 0.03) - y, w.wsZ != null ? w.wsZ - z : y - w.wsTop, 0.02), Math.abs(x) - (hwS(x, y, z) - w.pw), -z, (0.15 - nz) * 0.3);
+  const gRw = (x, y, z, nx, ny, nz) => Math.max(smax(w.rwBot - y, w.rwZ != null ? z - w.rwZ : y - w.rwTop, 0.02), Math.abs(x) - (hwS(x, y, z) - (w.pwR ?? w.pw)), z, (0.15 + nz) * 0.3);
   const gGlass = (x, y, z, nx, ny, nz) => Math.min(gSide(x, y, z, nx), gWs(x, y, z, nx, ny, nz), gRw(x, y, z, nx, ny, nz));
   // lamps (front-/rear-view shapes in |x|, y, limited in depth from the nose / tail)
   const fz = (y) => P.frontAt(y), rz = (y) => P.rearAt(y);
@@ -594,7 +574,7 @@ function carBody(s) {
     { part: w.frame ?? 'trim', g: (x, y, z, nx, ny, nz) => gGlass(x, y, z, nx, ny, nz) - (w.frameW ?? 0.022) },
     ...(p.livery?.(B, { belt, hwS }) || []),
     { part: 'liner', g: (x, y, z) => Math.min(...arches.map((a) => Math.hypot(z - a.z, y - a.y) - a.R - 0.012)) },
-    { part: p.lowerPart ?? 'black', g: (x, y, z) => y - (p.lowY ?? 0.2) },
+    { part: p.lowerPart ?? 'black', g: (x, y) => y - (p.lowY ?? 0.2) },
   ];
   const b0 = [-s.W / 2 - 0.06, 0.05, R - 0.06], b1 = [s.W / 2 + 0.06, s.H + 0.08, F + 0.06];
   return [{ B, b0, b1, regions, def: 'paint' }];
@@ -624,7 +604,7 @@ function carDetails(X) {
   }
   // wipers on the scuttle
   const zw = P.frontAt(p.cowlY + 0.05) - 0.03;
-  for (const x0 of [0.42, -0.12]) X.ribbonLine([...Array(7)].map((_, i) => [x0 + 0.27 - i * 0.09, 0, zw - i * 0.012]), 0.016, 'trim', [0, -1, 0], 0.012);
+  if (!p.noWipers) for (const x0 of [0.42, -0.12]) X.ribbonLine([...Array(7)].map((_, i) => [x0 + 0.27 - i * 0.09, 0, zw - i * 0.012]), 0.016, 'trim', [0, -1, 0], 0.012);
   // shark-fin antenna
   if (p.antennaZ != null) { const h = X.top(0, p.antennaZ); if (h) { const g = rbox(0.06, 0.07, 0.2, 0.03); const q = g.attributes.position; for (let i = 0; i < q.count; i++) { const k = (q.getZ(i) + 0.1) / 0.2; q.setY(i, 0.035 + (q.getY(i) - 0.035) * (1 - 0.7 * k)); } g.computeVertexNormals(); g.translate(0, h.p[1] - 0.005, p.antennaZ); add(g, 'trim'); } }
   // plates
@@ -648,28 +628,289 @@ function carDetails(X) {
   p.extra?.(X);
 }
 
-/** Common car spec builder. */
-function car(o) {
-  return { category: 'car', bodies: carBody, details: carDetails, cell: 0.016, ...o };
+// --- shared profiles -------------------------------------------------------------------------------
+const SEDAN_P = {
+  poly: [[2.2, 0.16, 1], [2.42, 0.24], [2.475, 0.42], [2.465, 0.6], [2.4, 0.7], [2.2, 0.76], [1.6, 0.85], [0.95, 0.935, 1], [0.6, 1.08], [0.25, 1.3], [0.0, 1.41], [-0.4, 1.45], [-0.85, 1.42], [-1.2, 1.31], [-1.62, 1.04, 1],
+    [-2.0, 1.0], [-2.32, 0.98], [-2.44, 0.92], [-2.475, 0.76], [-2.47, 0.5], [-2.42, 0.25], [-2.2, 0.16, 1], [0, 0.15, 1], [2.2, 0.16, 1]],
+  sec: [[0.12, 0.8], [0.2, 0.88], [0.3, 0.915], [0.55, 0.935], [0.78, 0.93], [0.9, 0.915], [0.96, 0.895], [0.99, 0.855], [1.05, 0.82], [1.3, 0.72], [1.42, 0.64], [1.5, 0.5]],
+  beltY: 0.97, cowlY: 0.94, deckY: 1.03, noseTop: 0.72, tailTop: 0.95, cl: { fx: 0.3, fz: 0.42, rx: 0.24, rz: 0.3 }, ch: { fx: 0.12, fz: 0.25, rx: 0.12, rz: 0.25 },
+  win: { aOff: 0.3, cOff: 0.28, topOff: 0.06, wsTop: 1.36, rwBot: 1.07, rwTop: 1.38, pw: 0.05, pillars: [{ z: -0.15, w: 0.045, slant: 0.1 }] },
+  lamps: { head: [[0.4, 0.6], [0.43, 0.68], [1.1, 0.74], [1.1, 0.62]], headDepth: 0.42, indX: 0.82, tail: [[0.42, 0.84], [0.44, 0.93], [1.1, 0.95], [1.1, 0.82]], tailDepth: 0.32, tailIndY: 0.855, revX: 0.52,
+    grille: [[0, 0.46], [0, 0.66], [0.36, 0.66], [0.33, 0.46]], intake: [[0, 0.24], [0, 0.34], [0.6, 0.36], [0.62, 0.24]] },
+  seams: [1.08, -0.15, -1.0], handles: [0.3, -0.62], mirrorZ: 0.78, antennaZ: -0.9, plateF: 0.38, plateR: 0.62, exhaust: [-0.6, 0.6], cbl: [-1.45, -0.04], lowY: 0.2,
+};
+const SEDAN_I = { seatZ: 0.12, seatY: 0.55, dashZ: 0.85, dashY: 0.92, inW: 0.72, rear: true, rearZ: -0.78, seat: 0x3a2e26, seat2: 0x2c241e };
+const ESTATE_P = {
+  ...SEDAN_P,
+  poly: [[2.2, 0.16, 1], [2.42, 0.24], [2.475, 0.42], [2.465, 0.6], [2.4, 0.7], [2.2, 0.76], [1.6, 0.85], [0.95, 0.935, 1], [0.6, 1.08], [0.25, 1.3], [0.0, 1.42], [-0.6, 1.47], [-1.4, 1.465], [-2.0, 1.43], [-2.3, 1.34, 1],
+    [-2.42, 1.0], [-2.475, 0.78], [-2.47, 0.5], [-2.42, 0.25], [-2.2, 0.16, 1], [0, 0.15, 1], [2.2, 0.16, 1]],
+  deckY: 1.0, tailTop: 0.98, ch: { fx: 0.12, fz: 0.25, rx: 0.1, rz: 0.12 },
+  win: { aOff: 0.3, cOff: 0.3, topOff: 0.06, wsTop: 1.37, rwBot: 1.02, rwTop: 1.39, pw: 0.06, pillars: [{ z: -0.15, w: 0.045, slant: 0.1 }, { z: -1.22, w: 0.05, slant: -0.15 }] },
+  lamps: { ...SEDAN_P.lamps, tail: [[0.5, 0.86], [0.52, 0.98], [1.1, 1.0], [1.1, 0.84]], tailIndY: 0.88, revX: 0.6 },
+  rails: [-0.15, -2.05, 0.56], antennaZ: null, cbl: [-2.28, -0.03], plateR: 0.66, seams: [1.08, -0.15, -1.05],
+};
+const ESTATE_I = { ...SEDAN_I, cover: [-2.25, -1.2, 1.0] };
+
+/** Simple SDF body with custom regions (cabs, boxes). */
+function simpleBody(o) {
+  const B = makeBody({ wedge: 0, bowF: 0.03, bowR: 0, k0: 0.025, k1: 0.03, kY: 1, taperF: 0, taperR: 0, flare: 0, ySwF: 9, ySwR: 9, noseTop: 9, tailTop: 9, ...o.def });
+  return { B, b0: o.b0, b1: o.b1, regions: o.regions(B), def: o.defPart ?? 'paint', cell: o.cell };
+}
+/** Front lamp/grille/glass regions shared by cabs. */
+function cabRegions(B, o) {
+  const P = B.P, fz = (y) => P.frontAt(y), head = poly2(o.head, 0.012), grille = o.grille && poly2(o.grille, 0.02), side = poly2(o.side, 0.03);
+  const gHead = (x, y, z) => Math.max(head(Math.abs(x), y), fz(y) - o.headDepth - z);
+  const hwS = (x, y, z) => B.hwAt(y, B.zBow(z, Math.abs(x)));
+  const gWs = (x, y, z, nx, ny, nz) => Math.max(smax(o.wsBot - y, y - o.wsTop, 0.03), Math.abs(x) - (hwS(x, y, z) - (o.pw ?? 0.08)), (0.3 - nz) * 0.3);
+  const gSide = (x, y, z, nx) => Math.max(side(z, y), (0.5 - Math.abs(nx)) * 0.3);
+  const gGlass = (x, y, z, nx, ny, nz) => Math.min(gWs(x, y, z, nx, ny, nz), gSide(x, y, z, nx));
+  return [
+    { part: 'indicator_L', g: (x, y, z) => Math.max(gHead(x, y, z), o.indX - x) },
+    { part: 'indicator_R', g: (x, y, z) => Math.max(gHead(x, y, z), o.indX + x) },
+    { part: 'headlight', g: gHead },
+    { part: 'trim', g: (x, y, z) => gHead(x, y, z) - 0.01 },
+    ...(grille ? [{ part: o.grillePart ?? 'grille', g: (x, y, z) => Math.max(grille(Math.abs(x), y), fz(y) - 0.25 - z) }] : []),
+    ...(o.pre || []),
+    { part: 'glass', g: gGlass },
+    { part: 'trim', g: (x, y, z, nx, ny, nz) => gGlass(x, y, z, nx, ny, nz) - 0.03 },
+    ...(o.livery || []),
+    ...(o.arches || []).map((a) => ({ part: 'liner', g: (x, y, z) => Math.hypot(z - a.z, y - a.y) - a.R - 0.015 })),
+    { part: 'black', g: (x, y) => y - o.lowY },
+  ];
+}
+const band = (y0, y1, part, side = 0.5) => ({ part, g: (x, y, z, nx) => Math.max(y0 - y, y - y1, (side - Math.abs(nx)) * 0.3) });
+
+// --- bus -------------------------------------------------------------------------------------------
+const BUS_DOORS = [[5.12, 0.55], [0.9, 0.6], [-4.15, 0.55]];
+const BUS = {
+  id: 'bus', label: 'Stadtbus', category: 'bus', L: 12, W: 2.55, H: 3.0, r: 0.5, tyreW: 0.3, axles: [3.3, -2.6], color: 0xeef0f1, mass: 12000, power: 0.5, sillUD: 0.5,
+  rimStyle: 'truck', rim: 0xc5c9cd, rimRatio: 0.6, wheelX: 1.07, cell: 0.03, err: 0.003, seatX: 0.38, seatY: 0.95, seatZ: 5.05,
+  parts: { livTeal: [0x006b7d, CLS.paint], seat: [0x2a3b58, CLS.interior], floor: [0x34373a, CLS.interior], pole: [0xd6b21c, CLS.gloss] },
+  bodies: carBody, details: (X) => { carDetails(X); busDetails(X); },
+  p: {
+    poly: [[5.85, 0.3, 1], [5.97, 0.4], [6.0, 0.7], [5.98, 1.1], [5.97, 2.0], [5.92, 2.75], [5.75, 2.95], [5.3, 3.0], [-5.7, 3.0], [-5.93, 2.9], [-5.99, 2.5], [-6.0, 0.7], [-5.96, 0.4], [-5.85, 0.3, 1], [0, 0.3, 1], [5.85, 0.3, 1]],
+    sec: [[0.3, 1.2], [0.36, 1.255], [0.5, 1.275], [2.6, 1.275], [2.85, 1.25], [2.97, 1.15], [3.05, 0.8]], wedge: 0, flare: 0, archGap: 0.08,
+    beltY: 1.15, cowlY: 0.92, deckY: 9, noseTop: 9, tailTop: 9, bowF: 0.12, bowR: 0.05, k0: 0.03, k1: 0.05, taperF: 0, taperR: 0,
+    cl: { fx: 0.22, fz: 0.25, rx: 0.15, rz: 0.15 }, ch: { fx: 0.22, fz: 0.25, rx: 0.15, rz: 0.15 },
+    win: { aOff: 0.22, cOff: 0.3, topOff: 0.45, bot: 0.0, wsTop: 2.72, wsBot: 0.04, rwBot: 1.95, rwTop: 2.7, pw: 0.1, frameW: 0.04,
+      pillars: [4.35, 3.05, 1.75, -0.2, -1.45, -2.7, -3.95, -5.0].map((z) => ({ z, w: 0.05 })) },
+    lamps: { head: [[0.72, 0.52], [0.72, 0.7], [1.4, 0.72], [1.4, 0.52]], headDepth: 0.22, indX: 1.08, tail: [[0.95, 0.55], [0.95, 1.25], [1.4, 1.25], [1.4, 0.55]], tailDepth: 0.15, tailIndY: 0.75, revX: 1.02 },
+    regions: (B) => {
+      const P = B.P, dest = poly2([[0, 2.77], [0, 2.92], [0.95, 2.92], [0.95, 2.77]], 0.02);
+      const door = (x, y, z, nx) => Math.min(...BUS_DOORS.map(([c, w]) => Math.max(Math.abs(z - c) - w, 0.42 - y, y - 2.62, x + 0.4, (0.5 - Math.abs(nx)) * 0.3)));
+      return [
+        { part: 'taxi_sign', g: (x, y, z, nx, ny, nz) => Math.max(dest(Math.abs(x), y), P.frontAt(y) - 0.3 - z, (0.3 - nz) * 0.3) },
+        { part: 'taxi_sign', g: (x, y, z) => Math.max(Math.abs(z - 3.9) - 0.6, Math.abs(y - 2.72) - 0.08, x + 0.5) },
+        { part: 'glass', g: door },
+        { part: 'trim', g: (x, y, z, nx) => door(x, y, z, nx) - 0.04 },
+      ];
+    },
+    livery: () => [{ part: 'livTeal', g: (x, y) => y - 0.82 }, band(2.62, 2.7, 'livTeal')],
+    seams: [], handles: [], mirrorZ: 5.75, antennaZ: null, plateF: 0.45, plateR: 0.5, exhaust: [], lowY: 0.42, noWipers: true,
+  },
+};
+function busDetails(X) {
+  const { add } = X;
+  add(rb(1.9, 0.26, 2.4, 0.08, 0, 3.08, 0.8), 'paint'); // roof AC unit
+  add(rb(1.6, 0.18, 1.6, 0.06, 0, 3.05, -4.6), 'paint'); // engine/roof pod
+  for (const [c, w] of BUS_DOORS) { X.ribbonSide(-1, c, 0.45, 2.6, 0.012, 'trim', 8, 0.003); add(rb(0.03, 1.6, 0.03, 0.01, -1.24, 1.5, c - w * 0.5), 'pole'); add(rb(0.03, 1.6, 0.03, 0.01, -1.24, 1.5, c + w * 0.5), 'pole'); }
+  add(box(2.4, 0.06, 11.4, 0, 0.42, 0), 'floor');
+  for (let z = 3.9; z > -5.6; z -= 0.78) {
+    for (const sx of [-1, 1]) {
+      if (sx < 0 && BUS_DOORS.some(([c, w]) => Math.abs(z - c) < w + 0.35)) continue;
+      add(rb(0.85, 0.1, 0.42, 0.03, sx * 0.72, 0.92, z), 'seat'); add(rb(0.85, 0.5, 0.08, 0.03, sx * 0.72, 1.2, z - 0.22, -0.12), 'seat');
+    }
+    add(cyl(0.018, 0.018, 1.9, 0.3, 1.4, z, 6), 'pole');
+  }
+  // driver area
+  interior(X, { seatZ: 5.1, seatY: 1.09, inW: 1.15 });
+  add(rb(1.3, 0.35, 0.5, 0.06, 0.55, 1.15, 5.6), [0.07, 0.07, 0.075, CLS.interior / 15]);
+  const sw = new THREE.TorusGeometry(0.24, 0.022, 8, 28); sw.deleteAttribute('uv'); sw.rotateX(1.0); sw.translate(0.38, 1.35, 5.45); add(sw, 'black');
+  for (const sx of [-1, 1]) { add(cyl(0.02, 0.02, 0.6, sx * 1.45, 2.45, 5.85, 6, 0, Math.PI / 2), 'black'); add(rb(0.08, 0.38, 0.22, 0.03, sx * 1.72, 2.25, 5.85), 'black'); }
 }
 
+// --- ambulance (Rettungswagen) --------------------------------------------------------------------
+const CAB_POLY = [[3.25, 0.3, 1], [3.42, 0.38], [3.45, 0.55], [3.44, 0.78], [3.36, 0.95], [3.15, 1.05], [2.8, 1.12], [2.55, 1.18, 1], [2.2, 1.55], [1.9, 1.95], [1.6, 2.2], [1.3, 2.22], [1.15, 2.2, 1], [1.15, 0.3, 1], [3.25, 0.3, 1]];
+const AMB = {
+  id: 'ambulance', label: 'Rettungswagen', category: 'emergency', L: 6.9, W: 2.25, H: 2.85, r: 0.37, tyreW: 0.22, axles: [2.25, -1.55], color: 0xf4f5f4, mass: 4000, power: 0.75, sillUD: 0.45,
+  rimStyle: 'steel', rim: 0xc5c9cd, rimRatio: 0.62, wheelX: 0.86, cell: 0.022, err: 0.0025, seatX: 0.38,
+  interior: { seatZ: 1.72, seatY: 0.98, dashZ: 2.12, dashY: 1.28, inW: 0.85 },
+  parts: { livRed: [0xd9231a, CLS.paint], livYel: [0xf0b400, CLS.paint] },
+  ud: { sirenColors: [0x2050ff, 0x2050ff] },
+  bodies: () => {
+    const arF = { z: 2.25, y: 0.37, R: 0.44 }, arR = { z: -1.55, y: 0.37, R: 0.44 };
+    const cab = simpleBody({
+      def: { poly: CAB_POLY, sec: [[0.3, 0.9], [0.4, 0.97], [0.6, 1.0], [1.15, 1.0], [1.6, 0.96], [2.0, 0.9], [2.2, 0.84], [2.3, 0.6]], hw0: 1.0, cl: { fx: 0.25, fz: 0.3, rx: 0.05, rz: 0.05 }, ch: { fx: 0.2, fz: 0.3, rx: 0.05, rz: 0.05 }, arches: [arF] },
+      b0: [-1.06, 0.25, 1.1], b1: [1.06, 2.28, 3.5],
+      regions: (B) => cabRegions(B, { head: [[0.5, 0.8], [0.53, 0.95], [1.2, 0.98], [1.2, 0.82]], headDepth: 0.4, indX: 0.86, grille: [[0, 0.6], [0, 0.92], [0.42, 0.92], [0.4, 0.6]], wsBot: 1.22, wsTop: 2.08,
+        side: [[1.4, 1.22], [1.4, 2.08], [1.75, 2.08], [2.4, 1.22]], arches: [arF], lowY: 0.5, livery: [band(0.95, 1.12, 'livRed')] }),
+    });
+    const bat = (row, part) => ({ part, g: (x, y, z, nx) => { const c = Math.sin((Math.PI * (z + 4)) / 0.55) * (y - 1.15) * (row ? 1 : -1); return Math.max(Math.abs(y - 1.15) - 0.25, c * 4, (0.5 - Math.abs(nx)) * 0.3); } });
+    const box_ = simpleBody({
+      def: { poly: [[1.25, 0.45, 1], [1.32, 0.55], [1.32, 2.75], [1.24, 2.85], [-3.35, 2.85], [-3.45, 2.75], [-3.45, 0.55], [-3.4, 0.45, 1], [1.25, 0.45, 1]], sec: [[0.45, 1.06], [0.55, 1.12], [2.7, 1.12], [2.82, 1.06], [2.9, 0.8]], hw0: 1.12,
+        cl: { fx: 0.06, fz: 0.06, rx: 0.06, rz: 0.06 }, ch: { fx: 0.06, fz: 0.06, rx: 0.06, rz: 0.06 }, arches: [arR], bowF: 0 },
+      b0: [-1.18, 0.4, -3.5], b1: [1.18, 2.9, 1.38], cell: 0.026,
+      regions: () => {
+        const tail = poly2([[0.82, 0.55], [0.84, 1.25], [1.2, 1.25], [1.2, 0.55]], 0.01), gT = (x, y, z) => Math.max(tail(Math.abs(x), y), z - (-3.45 + 0.12));
+        const win = (x, y, z, nx, ny, nz) => Math.min(Math.max(Math.abs(z + 0.1) - 0.45, Math.abs(y - 2.05) - 0.3, -x, (0.5 - Math.abs(nx)) * 0.3), Math.max(Math.abs(Math.abs(x) - 0.45) - 0.36, Math.abs(y - 2.05) - 0.35, (0.5 + nz) * 0.3));
+        return [
+          { part: 'indicator_L', g: (x, y, z) => Math.max(gT(x, y, z), y - 0.75, -x) }, { part: 'indicator_R', g: (x, y, z) => Math.max(gT(x, y, z), y - 0.75, x) },
+          { part: 'reverse', g: (x, y, z) => Math.max(gT(x, y, z), Math.abs(x) - 0.92) }, { part: 'taillight', g: gT },
+          { part: 'glass', g: win }, { part: 'trim', g: (...a) => win(...a) - 0.03 },
+          bat(0, 'livRed'), bat(1, 'livYel'), band(2.55, 2.66, 'livRed', 0.3),
+          { part: 'liner', g: (x, y, z) => Math.hypot(z - arR.z, y - arR.y) - arR.R - 0.015 }, { part: 'black', g: (x, y) => y - 0.5 },
+        ];
+      },
+    });
+    return [cab, box_];
+  },
+  details: (X) => {
+    const { add } = X;
+    X.addLight(rb(1.5, 0.11, 0.26, 0.05, 0, 2.92, 1.12), 'siren'); add(rb(1.6, 0.05, 0.3, 0.02, 0, 2.86, 1.12), 'black');
+    for (const sx of [-1, 1]) { X.addLight(rb(0.18, 0.1, 0.12, 0.04, sx * 0.95, 2.9, -3.3), 'siren'); X.addLight(box(0.12, 0.04, 0.02, sx * 0.2, 0.86, 3.46), 'siren'); }
+    X.plate(1, 0.45); X.plate(-1, 0.5);
+    for (const sx of [-1, 1]) { const h = X.side(sx, 1.42, 2.3); if (h) { add(rb(0.05, 0.05, 0.2, 0.02, h.p[0] + sx * 0.08, 1.42, 2.3), 'black'); add(rb(0.07, 0.38, 0.22, 0.03, sx * 1.2, 1.55, 2.32), 'black'); } }
+    add(rb(0.04, 1.8, 0.03, 0.01, -1.125, 1.5, -0.4), 'trim'); X.ribbonSide(-1, -1.0, 0.55, 2.4, 0.01, 'trim', 6);
+    add(box(0.012, 1.75, 0.01, 0, 1.45, -3.455), 'trim');
+  },
+};
+
+// --- tow truck (Abschleppwagen, 7.5 t, flatbed) -------------------------------------------------
+const TOW = {
+  id: 'tow', label: 'Abschleppwagen', category: 'truck', L: 7.6, W: 2.3, H: 2.95, r: 0.42, tyreW: 0.26, axles: [2.95, -1.25], color: 0xe2661b, mass: 7000, power: 0.7, sillUD: 0.55,
+  rimStyle: 'truck', rim: 0xd2d5d8, rimRatio: 0.6, wheelX: 0.95, cell: 0.024, err: 0.0025, seatX: 0.38,
+  interior: { seatZ: 2.72, seatY: 1.55, dashZ: 3.4, dashY: 1.8, inW: 1.0 },
+  parts: { bed: [0x8c9196, CLS.metal], frame: [0x1a1b1d, CLS.matte], stripe: [0xf2f2f0, CLS.paint] },
+  ud: { sirenColors: [0xff9a00, 0xffb400] },
+  bodies: () => {
+    const arF = { z: 2.95, y: 0.42, R: 0.5 };
+    const cab = simpleBody({
+      def: { poly: [[3.65, 0.45, 1], [3.8, 0.55], [3.82, 1.0], [3.8, 1.55], [3.72, 2.4], [3.6, 2.66], [3.38, 2.76], [2.2, 2.76], [2.05, 2.7], [2.0, 2.5], [2.0, 0.5, 1], [3.65, 0.45, 1]],
+        sec: [[0.45, 1.06], [0.55, 1.13], [2.4, 1.13], [2.62, 1.07], [2.8, 0.8]], hw0: 1.13, cl: { fx: 0.12, fz: 0.12, rx: 0.05, rz: 0.05 }, ch: { fx: 0.12, fz: 0.12, rx: 0.05, rz: 0.05 }, arches: [arF], bowF: 0.04 },
+      b0: [-1.2, 0.4, 1.95], b1: [1.2, 2.82, 3.88],
+      regions: (B) => cabRegions(B, { head: [[0.62, 0.56], [0.62, 0.72], [1.05, 0.74], [1.05, 0.56]], headDepth: 0.25, indX: 0.88, grille: [[0, 0.86], [0, 1.4], [0.72, 1.4], [0.72, 0.86]], wsBot: 1.62, wsTop: 2.5,
+        side: [[2.2, 1.66], [2.2, 2.42], [3.4, 2.42], [3.55, 1.66]], arches: [arF], lowY: 0.5, livery: [band(1.45, 1.53, 'stripe')] }),
+    });
+    return [cab];
+  },
+  details: (X) => {
+    const { add } = X;
+    add(box(0.9, 0.25, 5.9, 0, 0.75, -0.9), 'frame'); // chassis rails
+    add(rb(2.3, 0.12, 5.6, 0.02, 0, 1.18, -1.0, 0.02), 'bed'); // tilting plateau
+    for (const sx of [-1, 1]) { add(rb(0.06, 0.14, 5.6, 0.01, sx * 1.15, 1.28, -1.0, 0.02), 'paint'); add(rb(0.6, 0.06, 1.3, 0.03, sx * 0.95, 1.02, -1.25), 'frame'); }
+    add(rb(2.3, 1.3, 0.08, 0.02, 0, 1.9, 1.75), 'bed'); for (let i = 0; i < 4; i++) add(box(2.2, 0.04, 0.1, 0, 1.4 + i * 0.3, 1.78), 'frame'); // headboard
+    add(rb(0.5, 0.35, 0.5, 0.05, 0, 1.4, 1.35), 'frame'); add(cyl(0.12, 0.12, 0.45, 0, 1.45, 1.05, 14, 0, Math.PI / 2), 'chrome'); // winch
+    add(box(2.0, 0.12, 0.12, 0, 0.5, -3.75), 'frame'); // underride bar
+    X.addLight(rb(1.5, 0.11, 0.28, 0.05, 0, 2.84, 3.0), 'siren'); add(rb(1.6, 0.05, 0.3, 0.02, 0, 2.78, 3.0), 'black');
+    for (const sx of [-1, 1]) {
+      X.addLight(rb(0.22, 0.1, 0.03, 0.02, sx * 0.85, 0.74, -3.79), 'taillight'); X.addLight(rb(0.12, 0.1, 0.03, 0.02, sx * 1.04, 0.74, -3.79), sx > 0 ? 'indicator_L' : 'indicator_R');
+      add(rb(0.38, 0.14, 0.05, 0.02, sx * 0.92, 0.74, -3.76), 'frame');
+      const h = X.side(sx, 2.0, 3.6); if (h) { add(rb(0.06, 0.06, 0.25, 0.02, h.p[0] + sx * 0.1, 2.0, 3.55), 'black'); add(rb(0.07, 0.42, 0.24, 0.03, sx * 1.3, 2.05, 3.55), 'black'); }
+    }
+    X.plate(1, 0.45); X.plateAt(-1, 0, 0.55, -3.81);
+  },
+};
+
+// --- delivery scooter -----------------------------------------------------------------------------
+const SCOOTER = {
+  id: 'scooter', label: 'Lieferroller', category: 'scooter', L: 1.85, W: 0.72, H: 1.3, r: 0.23, tyreW: 0.055, axles: [0.62, -0.6], color: 0x2f5f8a, mass: 200, power: 0.8, sillUD: 0.28,
+  rimStyle: 'spoke5', rim: 0x3a3d42, rimRatio: 0.6, seatX: 0, seatY: 0.69, seatZ: -0.2, ud: { physTrack: 0.6 },
+  wheels: [['wheel_FL', 0.029, 0.62], ['wheel_FR', -0.029, 0.62], ['wheel_RL', 0.029, -0.6], ['wheel_RR', -0.029, -0.6]],
+  parts: { box: [0xe0581c, CLS.gloss], seatP: [0x151515, CLS.interior] },
+  details: (X) => {
+    const { add } = X;
+    add(rb(0.34, 0.08, 0.72, 0.03, 0, 0.33, 0.0), 'paint'); // footboard
+    add(rb(0.38, 0.34, 0.78, 0.13, 0, 0.56, -0.38), 'paint'); // rear body
+    add(rb(0.3, 0.1, 0.62, 0.045, 0, 0.78, -0.28), 'seatP');
+    add(rb(0.44, 0.66, 0.12, 0.055, 0, 0.66, 0.45, -0.22), 'paint'); // leg shield
+    add(rb(0.16, 0.07, 0.4, 0.03, 0, 0.5, 0.64), 'paint'); // front mudguard
+    for (const sx of [-1, 1]) add(cyl(0.018, 0.018, 0.5, sx * 0.075, 0.42, 0.66, 8, -0.3), 'chrome'); // fork
+    add(cyl(0.03, 0.03, 0.5, 0, 0.86, 0.56, 8, -0.3), 'black'); // steering column
+    add(rb(0.62, 0.035, 0.04, 0.015, 0, 1.08, 0.5), 'black');
+    add(rb(0.26, 0.12, 0.16, 0.05, 0, 1.05, 0.56), 'paint');
+    X.addLight(rb(0.14, 0.07, 0.03, 0.02, 0, 1.03, 0.645), 'headlight');
+    X.glass(rb(0.3, 0.3, 0.012, 0.02, 0, 1.25, 0.6, -0.35));
+    for (const sx of [-1, 1]) {
+      X.addLight(rb(0.04, 0.03, 0.05, 0.01, sx * 0.33, 1.08, 0.5), sx > 0 ? 'indicator_L' : 'indicator_R');
+      X.addLight(rb(0.05, 0.03, 0.04, 0.01, sx * 0.14, 0.62, -0.79), sx > 0 ? 'indicator_L' : 'indicator_R');
+      add(cyl(0.008, 0.008, 0.25, sx * 0.27, 1.2, 0.5, 6), 'black'); add(rb(0.08, 0.05, 0.01, 0.01, sx * 0.27, 1.32, 0.5), 'chrome');
+    }
+    X.addLight(rb(0.16, 0.06, 0.03, 0.02, 0, 0.66, -0.78), 'taillight');
+    add(rb(0.5, 0.03, 0.42, 0.01, 0, 0.84, -0.58), 'black'); // rack
+    add(rb(0.48, 0.44, 0.46, 0.04, 0, 1.08, -0.58), 'box'); add(rb(0.49, 0.03, 0.47, 0.01, 0, 1.24, -0.58), 'black');
+    add(cyl(0.025, 0.03, 0.35, -0.16, 0.3, -0.55, 10, Math.PI / 2), 'chrome');
+  },
+};
+
+/** Common car spec builder. */
+function car(o) {
+  const s = { category: 'car', bodies: carBody, details: carDetails, cell: 0.016, ...o };
+  return s;
+}
+const roofBar = (z, siren) => (X) => {
+  const h = X.top(0, z); if (!h) return; const y = h.p[1];
+  if (siren) { X.add(rb(1.2, 0.05, 0.3, 0.02, 0, y + 0.03, z), 'black'); for (const sx of [-1, 1]) X.addLight(rb(0.4, 0.1, 0.26, 0.04, sx * 0.38, y + 0.1, z), 'siren'); X.add(rb(0.36, 0.09, 0.24, 0.03, 0, y + 0.095, z), 'black'); }
+  else { X.add(rb(0.62, 0.035, 0.24, 0.012, 0, y + 0.02, z), 'black'); const g = new THREE.CylinderGeometry(0.1, 0.12, 0.6, 4, 1); g.deleteAttribute('uv'); g.rotateY(Math.PI / 4); g.rotateZ(Math.PI / 2); g.scale(1, 0.95, 0.9); g.translate(0, y + 0.12, z); g.computeVertexNormals(); X.addLight(g, 'taxi_sign'); }
+};
+
 export const CARS = [
-  // Premium saloon (Limousine), rear-wheel drive
-  car({
-    id: 'sedan', label: 'Limousine', L: 4.95, W: 1.87, H: 1.45, r: 0.335, tyreW: 0.235, axles: [1.6, -1.34], color: 0x1f2b3e, mass: 1600, power: 1.05,
-    rimStyle: 'twin5', seatY: 0.42, seatZ: 0.08,
-    interior: { seatZ: 0.12, seatY: 0.55, dashZ: 0.85, dashY: 0.92, inW: 0.72, rear: true, rearZ: -0.78, seat: 0x3a2e26, seat2: 0x2c241e },
-    p: {
-      poly: [[2.2, 0.16, 1], [2.42, 0.24], [2.475, 0.42], [2.465, 0.6], [2.4, 0.7], [2.2, 0.76], [1.6, 0.85], [0.95, 0.935, 1], [0.6, 1.08], [0.25, 1.3], [0.0, 1.41], [-0.4, 1.45], [-0.85, 1.42], [-1.2, 1.31], [-1.62, 1.04, 1],
-        [-2.0, 1.0], [-2.32, 0.98], [-2.44, 0.92], [-2.475, 0.76], [-2.47, 0.5], [-2.42, 0.25], [-2.2, 0.16, 1], [0, 0.15, 1], [2.2, 0.16, 1]],
-      sec: [[0.12, 0.8], [0.2, 0.88], [0.3, 0.915], [0.55, 0.935], [0.78, 0.93], [0.9, 0.915], [0.96, 0.895], [0.99, 0.855], [1.05, 0.82], [1.3, 0.72], [1.42, 0.64], [1.5, 0.5]],
-      beltY: 0.97, cowlY: 0.94, deckY: 1.03, noseTop: 0.72, tailTop: 0.95, cl: { fx: 0.3, fz: 0.42, rx: 0.24, rz: 0.3 }, ch: { fx: 0.12, fz: 0.25, rx: 0.12, rz: 0.25 },
-      win: { aOff: 0.3, cOff: 0.28, topOff: 0.06, wsTop: 1.36, wsZ: 0.1, rwBot: 1.07, rwTop: 1.38, rwZ: -0.95, pw: 0.05, pillars: [{ z: -0.15, w: 0.045, slant: 0.1 }] },
-      lamps: { head: [[0.4, 0.6], [0.43, 0.68], [1.1, 0.74], [1.1, 0.62]], headDepth: 0.42, indX: 0.82, tail: [[0.42, 0.84], [0.44, 0.93], [1.1, 0.95], [1.1, 0.82]], tailDepth: 0.32, tailIndY: 0.855, revX: 0.52,
-        grille: [[0, 0.46], [0, 0.66], [0.36, 0.66], [0.33, 0.46]], intake: [[0, 0.24], [0, 0.34], [0.6, 0.36], [0.62, 0.24]] },
-      seams: [1.08, -0.15, -1.0], handles: [0.3, -0.62], mirrorZ: 0.78, antennaZ: -0.9, plateF: 0.38, plateR: 0.62, exhaust: [-0.6, 0.6], cbl: [-1.45, -0.04], lowY: 0.2,
-    },
-  }),
+  car({ id: 'sedan', label: 'Limousine', L: 4.95, W: 1.87, H: 1.45, r: 0.335, tyreW: 0.235, axles: [1.6, -1.34], color: 0x1f2b3e, mass: 1600, power: 1.05, rimStyle: 'twin5', interior: SEDAN_I, p: SEDAN_P }),
+  car({ id: 'taxi', label: 'Taxi', L: 4.95, W: 1.87, H: 1.46, r: 0.335, tyreW: 0.235, axles: [1.6, -1.34], color: 0xe6d7b0, mass: 1650, power: 0.95, rimStyle: 'aero', rim: 0xa9aeb4, interior: { ...SEDAN_I, seat: 0x232325, seat2: 0x303034 },
+    p: { ...SEDAN_P, extra: roofBar(-0.3, false) } }),
+  car({ id: 'hatchback', label: 'Kompaktwagen', L: 4.26, W: 1.79, H: 1.46, r: 0.32, tyreW: 0.215, axles: [1.27, -1.36], color: 0xb3261e, mass: 1250, power: 0.9, rimStyle: 'aero', rim: 0xd0d4d8,
+    interior: { seatZ: 0.0, seatY: 0.56, dashZ: 0.62, dashY: 0.93, inW: 0.69, rear: true, rearZ: -0.85 },
+    p: { ...SEDAN_P,
+      poly: [[1.9, 0.17, 1], [2.08, 0.24], [2.13, 0.42], [2.12, 0.58], [2.05, 0.68], [1.85, 0.75], [1.3, 0.86], [0.78, 0.95, 1], [0.45, 1.12], [0.1, 1.36], [-0.15, 1.44], [-0.7, 1.46], [-1.3, 1.43], [-1.7, 1.36], [-1.95, 1.2, 1],
+        [-2.08, 0.98], [-2.13, 0.8], [-2.12, 0.5], [-2.08, 0.26], [-1.9, 0.17, 1], [0, 0.16, 1], [1.9, 0.17, 1]],
+      sec: [[0.12, 0.77], [0.2, 0.85], [0.3, 0.875], [0.55, 0.895], [0.78, 0.89], [0.9, 0.875], [0.96, 0.855], [0.99, 0.82], [1.05, 0.79], [1.3, 0.7], [1.42, 0.63], [1.5, 0.5]],
+      deckY: 1.0, tailTop: 0.98, ch: { fx: 0.12, fz: 0.25, rx: 0.12, rz: 0.15 },
+      win: { aOff: 0.28, cOff: 0.34, topOff: 0.06, wsTop: 1.38, rwBot: 1.03, rwTop: 1.38, pw: 0.06, pillars: [{ z: -0.22, w: 0.045, slant: 0.1 }] },
+      lamps: { ...SEDAN_P.lamps, head: [[0.38, 0.6], [0.41, 0.68], [1.1, 0.73], [1.1, 0.62]], tail: [[0.52, 0.88], [0.54, 1.0], [1.1, 1.0], [1.1, 0.86]], tailIndY: 0.9, revX: 0.6, grille: [[0, 0.5], [0, 0.62], [0.32, 0.62], [0.3, 0.5]] },
+      seams: [0.86, -0.22, -0.98], handles: [0.15, -0.66], mirrorZ: 0.6, antennaZ: -1.3, plateR: 0.66, exhaust: [-0.5], cbl: [-1.88, -0.03] } }),
+  car({ id: 'estate', label: 'Kombi', L: 4.95, W: 1.87, H: 1.48, r: 0.335, tyreW: 0.235, axles: [1.6, -1.34], color: 0x4b5a3c, mass: 1700, power: 1, rimStyle: 'twin5', interior: ESTATE_I, p: ESTATE_P }),
+  car({ id: 'suv', label: 'SUV', L: 4.75, W: 1.93, H: 1.7, r: 0.37, tyreW: 0.255, axles: [1.5, -1.35], color: 0x2d2f33, mass: 2100, power: 1.15, rimStyle: 'twin5', rimRatio: 0.64, rim: 0x6a6e74,
+    interior: { seatZ: 0.05, seatY: 0.8, dashZ: 0.82, dashY: 1.14, inW: 0.75, rear: true, rearZ: -0.85, seat: 0x6b5644, seat2: 0x4f4034, cover: [-2.15, -1.3, 1.2] },
+    parts: { clad: [0x1c1d20, CLS.matte] },
+    p: { ...ESTATE_P,
+      poly: [[2.15, 0.3, 1], [2.33, 0.38], [2.375, 0.58], [2.36, 0.8], [2.28, 0.9], [2.05, 0.96], [1.5, 1.05], [0.95, 1.12, 1], [0.6, 1.32], [0.3, 1.56], [0, 1.65], [-0.6, 1.7], [-1.6, 1.68], [-2.1, 1.62], [-2.3, 1.5, 1],
+        [-2.35, 1.15], [-2.375, 0.9], [-2.37, 0.6], [-2.32, 0.38], [-2.15, 0.3, 1], [0, 0.28, 1], [2.15, 0.3, 1]],
+      sec: [[0.27, 0.84], [0.35, 0.92], [0.5, 0.955], [0.75, 0.965], [0.95, 0.96], [1.08, 0.945], [1.14, 0.925], [1.17, 0.885], [1.23, 0.85], [1.5, 0.76], [1.64, 0.68], [1.75, 0.5]],
+      beltY: 1.15, cowlY: 1.12, deckY: 1.15, noseTop: 0.92, tailTop: 1.12, flare: 0.02, archGap: 0.07,
+      win: { aOff: 0.3, cOff: 0.3, topOff: 0.07, wsTop: 1.6, rwBot: 1.2, rwTop: 1.62, pw: 0.06, pillars: [{ z: -0.15, w: 0.05, slant: 0.1 }, { z: -1.3, w: 0.06, slant: -0.15 }] },
+      lamps: { head: [[0.42, 0.82], [0.45, 0.9], [1.2, 0.95], [1.2, 0.83]], headDepth: 0.42, indX: 0.86, tail: [[0.5, 1.05], [0.52, 1.15], [1.2, 1.18], [1.2, 1.03]], tailDepth: 0.32, tailIndY: 1.07, revX: 0.6,
+        grille: [[0, 0.58], [0, 0.88], [0.4, 0.88], [0.38, 0.58]], intake: [[0, 0.4], [0, 0.5], [0.65, 0.52], [0.67, 0.4]] },
+      livery: () => [{ part: 'clad', g: (x, y, z) => Math.min(...[1.5, -1.35].map((az) => Math.hypot(z - az, y - 0.37) - 0.5)) }],
+      lowerPart: 'clad', lowY: 0.42, seams: [1.0, -0.15, -1.05], handles: [0.3, -0.62], mirrorZ: 0.7, plateF: 0.52, plateR: 0.85, rails: [-0.1, -2.0, 0.6], railPart: 'trim', cbl: [-2.25, -0.03], exhaust: [-0.6, 0.6] } }),
+  car({ id: 'coupe', label: 'Sportcoupé', L: 4.6, W: 1.9, H: 1.3, r: 0.35, tyreW: 0.275, axles: [1.45, -1.25], color: 0xc9cbd0, mass: 1450, power: 1.6, rimStyle: 'multi10', rimRatio: 0.74, rim: 0x3a3d42,
+    interior: { seatZ: -0.2, seatY: 0.45, dashZ: 0.52, dashY: 0.8, inW: 0.72, seat: 0x7a1d18, seat2: 0x1c1c1e },
+    p: { ...SEDAN_P,
+      poly: [[2.05, 0.13, 1], [2.25, 0.2], [2.3, 0.36], [2.28, 0.52], [2.2, 0.6], [2.0, 0.66], [1.3, 0.78], [0.75, 0.86, 1], [0.4, 1.02], [0.05, 1.24], [-0.35, 1.3], [-0.75, 1.27], [-1.25, 1.12], [-1.75, 0.95, 1],
+        [-2.1, 0.92], [-2.28, 0.88], [-2.3, 0.72], [-2.28, 0.45], [-2.22, 0.22], [-2.05, 0.13, 1], [0, 0.12, 1], [2.05, 0.13, 1]],
+      sec: [[0.1, 0.82], [0.18, 0.9], [0.3, 0.94], [0.5, 0.95], [0.7, 0.945], [0.82, 0.93], [0.87, 0.9], [0.9, 0.86], [0.96, 0.82], [1.18, 0.7], [1.28, 0.6], [1.35, 0.4]],
+      beltY: 0.88, cowlY: 0.86, deckY: 0.95, noseTop: 0.62, tailTop: 0.9, flare: 0.022, cl: { fx: 0.32, fz: 0.45, rx: 0.26, rz: 0.32 }, ch: { fx: 0.14, fz: 0.3, rx: 0.14, rz: 0.3 },
+      win: { aOff: 0.3, cOff: 0.25, topOff: 0.06, wsTop: 1.24, rwBot: 0.98, rwTop: 1.26, pw: 0.05, pillars: [] },
+      lamps: { head: [[0.4, 0.53], [0.43, 0.6], [1.1, 0.66], [1.1, 0.55]], headDepth: 0.42, indX: 0.84, tail: [[0.3, 0.78], [0.32, 0.86], [1.1, 0.89], [1.1, 0.76]], tailDepth: 0.3, tailIndY: 0.79, revX: 0.42,
+        grille: [[0, 0.4], [0, 0.56], [0.3, 0.56], [0.28, 0.4]], intake: [[0, 0.18], [0, 0.3], [0.7, 0.32], [0.72, 0.18]] },
+      seams: [0.98, -0.4], handles: [-0.28], mirrorZ: 0.5, antennaZ: null, plateF: 0.3, plateR: 0.55, exhaust: [-0.75, -0.62, 0.62, 0.75], cbl: null, lowY: 0.17 } }),
+  car({ id: 'van', label: 'Transporter', L: 5.0, W: 1.95, H: 1.98, r: 0.35, tyreW: 0.225, axles: [1.65, -1.6], color: 0xf1f1ee, mass: 2400, power: 0.85, rimStyle: 'steel', rimRatio: 0.62, rim: 0xb9bdc2,
+    interior: { seatZ: 1.0, seatY: 0.98, dashZ: 1.55, dashY: 1.27, inW: 0.8 }, parts: { livRed: [0xd13b2a, CLS.paint] },
+    p: { ...SEDAN_P,
+      poly: [[2.3, 0.22, 1], [2.46, 0.3], [2.5, 0.5], [2.49, 0.72], [2.42, 0.88], [2.25, 0.98], [1.95, 1.05], [1.7, 1.12, 1], [1.35, 1.45], [1.0, 1.78], [0.7, 1.93], [0.2, 1.98], [-1.5, 1.98], [-2.35, 1.96], [-2.48, 1.88, 1],
+        [-2.5, 1.2], [-2.5, 0.5], [-2.46, 0.3], [-2.3, 0.22, 1], [0, 0.21, 1], [2.3, 0.22, 1]],
+      sec: [[0.2, 0.88], [0.3, 0.95], [0.5, 0.975], [1.0, 0.975], [1.1, 0.97], [1.15, 0.96], [1.6, 0.94], [1.9, 0.9], [1.98, 0.85], [2.05, 0.6]], wedge: 0, bowR: 0.02,
+      beltY: 1.12, cowlY: 1.12, deckY: 1.9, noseTop: 0.95, tailTop: 1.9, cl: { fx: 0.25, fz: 0.3, rx: 0.08, rz: 0.08 }, ch: { fx: 0.2, fz: 0.25, rx: 0.08, rz: 0.08 },
+      win: { aOff: 0.25, cOff: 0.3, topOff: 0.12, wsTop: 1.86, rwBot: 1.25, rwTop: 1.85, pw: 0.12, pillars: [{ z: -1.25, w: 1.75 }] },
+      lamps: { head: [[0.45, 0.82], [0.48, 0.94], [1.2, 0.98], [1.2, 0.84]], headDepth: 0.4, indX: 0.86, tail: [[0.82, 0.6], [0.84, 1.15], [1.2, 1.15], [1.2, 0.6]], tailDepth: 0.12, tailIndY: 0.75, revX: 0.88,
+        grille: [[0, 0.62], [0, 0.92], [0.45, 0.92], [0.43, 0.62]], intake: [[0, 0.3], [0, 0.44], [0.6, 0.45], [0.62, 0.3]] },
+      livery: () => [band(0.93, 1.0, 'livRed')],
+      seams: [1.08, 0.35, -0.95], handles: [0.6, -0.15], mirrorZ: 1.25, antennaZ: null, plateF: 0.45, plateR: 0.5, exhaust: [-0.6], cbl: [-2.2, -0.04], lowY: 0.32,
+      extra: (X) => { X.add(box(1.7, 1.2, 0.05, 0, 1.0, 0.5), [0.09, 0.09, 0.09, CLS.interior / 15]); X.add(box(0.012, 1.55, 0.01, 0, 1.15, -2.505), 'trim'); } } }),
+  car({ id: 'police', label: 'Polizei', L: 4.95, W: 1.87, H: 1.48, r: 0.335, tyreW: 0.235, axles: [1.6, -1.34], color: 0xc9ced3, mass: 1750, power: 1.25, rimStyle: 'spoke5', rim: 0xaab0b6, interior: { ...ESTATE_I, seat: 0x2b2c2f, seat2: 0x1f2022 },
+    parts: { livBlue: [0x1d4aa0, CLS.paint] },
+    p: { ...ESTATE_P, mirrorPart: 'livBlue',
+      livery: (_b, { belt }) => [{ part: 'livBlue', g: (x, y, z, nx) => Math.max(y - (belt(z) - 0.1), 0.34 - y, (0.6 - Math.abs(nx)) * 0.3) }],
+      extra: (X) => { roofBar(-0.1, true)(X); for (const sx of [-1, 1]) X.addLight(box(0.1, 0.03, 0.02, sx * 0.25, 0.44, 2.48), 'siren'); } } }),
+  BUS, AMB, TOW, SCOOTER,
 ];
 
 export function makeCar(s) { return build(s); }

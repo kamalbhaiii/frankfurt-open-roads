@@ -15,7 +15,16 @@ const BED_NAMES = ['amb_traffic', 'amb_crowd', 'amb_birds', 'amb_wind', 'amb_wat
 /** Gets {x, y, z} from the various actor shapes used in the game. */
 export function posOf(o) {
   if (!o) return null;
-  if (o.body?.translation) return o.body.translation();
+  if (o.destroyed) return null;
+  if (o.body?.translation) {
+    try {
+      if (o.body.isValid && !o.body.isValid()) return null;
+      return o.body.translation();
+    } catch {
+      // Traffic may be removed between audio emitter updates; its Rapier handle is freed.
+      return null;
+    }
+  }
   if (o.position && o.position.x != null) return o.position;
   if (o.root?.position) return o.root.position;
   if (o.x != null && o.z != null) return { x: o.x, y: o.y ?? 1, z: o.z };

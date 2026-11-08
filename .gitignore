@@ -5,3 +5,4 @@ tests/screenshots/
 *.log
 
 docs/
+dist/

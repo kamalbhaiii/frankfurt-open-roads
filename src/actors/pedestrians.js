@@ -58,6 +58,26 @@ const ZONES = [
     ],
   },
   {
+    id: 'residential',
+    names: [
+      'Oeder Weg',
+      'Berger Straße',
+      'Grüneburgweg',
+      'Schweizer Straße',
+      'Ostendstraße',
+      'Arndtstraße',
+    ],
+    cls: null,
+    r: 300,
+    // Nordend, Westend, Sachsenhausen and Ostend; weighted to residential density.
+    at: [
+      [1071, -1028],
+      [-714, -918],
+      [857, 907],
+      [1571, -88],
+    ],
+  },
+  {
     id: 'river',
     names: ['Mainkai', 'Schaumainkai', 'Untermainkai', 'Sachsenhäuser Ufer', 'Deutschherrnufer'],
     cls: null,
@@ -241,6 +261,8 @@ export class Pedestrians {
         return isRushHour(dow, hour) ? 2.8 : hour > 5 && hour < 24 ? 1.6 : 0.7;
       case 'bank':
         return workday ? (isRushHour(dow, hour) ? 2.6 : hour > 11.8 && hour < 14 ? 2.2 : hour > 9 && hour < 18 ? 1.1 : 0.25) : 0.25;
+      case 'residential':
+        return workday ? (isRushHour(dow, hour) ? 1.15 : hour > 16 && hour < 20 ? 1.35 : 0.9) : hour > 9 && hour < 21 ? 1.35 : 0.7;
       case 'river':
         return this.sunny ? (hour > 7 && hour < 21 ? (dow === 0 || dow === 6 ? 2.8 : 2) : 0.4) : 0.5;
     }
@@ -280,6 +302,10 @@ export class Pedestrians {
         return this.sunny && r < 0.3 && (hour < 10 || hour > 17) ? 'jogger' : r < 0.6 ? 'casual' : r < 0.8 ? 'senior' : 'student';
       case 'station':
         return r < 0.3 ? 'business' : r < 0.6 ? 'casual' : r < 0.8 ? 'tourist' : 'student';
+      case 'residential':
+        // Approximate the citywide 16% 65+ share; younger residents use the
+        // existing student outfit rather than an unmodelled child character.
+        return r < 0.16 ? 'senior' : r < 0.38 ? 'student' : r < 0.56 ? 'business' : 'casual';
     }
     return hour < 11 && r < 0.25 ? 'senior' : r < 0.6 ? 'casual' : r < 0.8 ? 'student' : 'business';
   }

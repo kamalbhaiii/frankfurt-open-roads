@@ -139,7 +139,7 @@ const WEATHER_GLSL = `
 export function surfaceMaterial(name, o = {}) {
   const detail = detailOn();
   const ripples = quality() === 'high' || quality() === 'ultra';
-  const bomb = detail ? (o.bomb ?? 'free') : 'none';
+  const bomb = ripples ? (o.bomb ?? 'free') : 'none'; // second texture sample only on high/ultra
   const sc = Array.isArray(o.scale) ? o.scale : [o.scale ?? 2, o.scale ?? 2];
   const m = new THREE.MeshStandardMaterial({ color: o.tint ?? 0xffffff, roughness: 1, metalness: o.metal ?? 0, vertexColors: !!o.vertexColors, side: o.side ?? THREE.FrontSide });
   if (o.offset) {

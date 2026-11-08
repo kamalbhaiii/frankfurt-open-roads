@@ -8,7 +8,7 @@ import { clamp } from '../core/math.js';
 import { BLIP_STYLES } from '../gameplay/markers.js';
 import { MAP_BOUNDS, LAND_COLOR, MapRenderer, drawBlip } from './mapRenderer.js';
 
-const LEGEND = ['waypoint', 'objective', 'story', 'race', 'safehouse', 'hospital', 'police', 'garage', 'health', 'armor'];
+const LEGEND = ['waypoint', 'objective', 'busdepot', 'taxirank', 'courierdepot', 'ambulancedepot', 'towdepot', 'scooterdepot', 'race', 'safehouse', 'hospital', 'police', 'garage', 'health', 'armor'];
 const MIN_SCALE = 0.12,
   MAX_SCALE = 3;
 

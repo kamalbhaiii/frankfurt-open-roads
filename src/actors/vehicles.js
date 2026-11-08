@@ -11,9 +11,150 @@ import { ctx } from '../core/context.js';
 import { CAR_KINDS, CAR_PAINTS, WATER_Y, QUALITY } from '../core/config.js';
 import { rnd, clamp, lerp, SpatialGrid } from '../core/math.js';
 import { events } from '../core/events.js';
-import { recolor, randomPerson } from './characters.js';
+import { randomPerson } from './characters.js';
+import { VEHICLE_TYPES } from './vehicleTypes.js';
+
+/** Kinds whose livery is fixed (never resprayed). */
+const FIXED_LIVERY = new Set(['taxi', 'police', 'van', 'bus', 'ambulance', 'tow']);
+
+/**
+ * Vehicle body materials. Vertex colour alpha holds a material class (cls / 15, see tools/models/cars.mjs CLS):
+ * 1 paint (clear-coated on medium+), 2 chrome, 3 gloss black, 4 rubber, 5 interior, 6-10 lamps, 11 metal, 13 lens.
+ * Back faces (seen through the glass) render as dark interior trim.
+ */
+function patchVehicleMaterial(m) {
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+#ifdef USE_COLOR_ALPHA
+  float vCls = floor(vColor.a * 15.0 + 0.5);
+  diffuseColor.a = opacity;
+#else
+  float vCls = 1.0;
+#endif
+  if (!gl_FrontFacing) { diffuseColor.rgb = vec3(0.035); vCls = 5.0; }`,
+      )
+      .replace(
+        '#include <roughnessmap_fragment>',
+        `#include <roughnessmap_fragment>
+  roughnessFactor = vCls == 1.0 ? 0.32 : vCls == 2.0 ? 0.1 : vCls == 3.0 ? 0.22 : vCls == 4.0 ? 0.88 : vCls == 5.0 ? 0.9 : vCls == 11.0 ? 0.3 : vCls == 13.0 ? 0.08 : (vCls >= 6.0 && vCls <= 10.0) ? 0.15 : 0.7;`,
+      )
+      .replace(
+        '#include <metalnessmap_fragment>',
+        `#include <metalnessmap_fragment>
+  metalnessFactor = vCls == 1.0 ? 0.3 : vCls == 2.0 ? 1.0 : vCls == 11.0 ? 0.85 : 0.0;`,
+      );
+    if (m.isMeshPhysicalMaterial)
+      sh.fragmentShader = sh.fragmentShader.replace(
+        '#include <lights_physical_fragment>',
+        '#include <lights_physical_fragment>\n  material.clearcoat *= vCls == 1.0 ? 1.0 : 0.0;',
+      );
+  };
+  m.customProgramCacheKey = () => (m.isMeshPhysicalMaterial ? 'vehicle-pbr-cc' : 'vehicle-pbr');
+  return m;
+}
+
+/** Clear-coated (medium+) or plain PBR material for vertex-coloured vehicle meshes. */
+export function bodyMaterial(src, doubleSide, quality = ctx.quality) {
+  const physical = quality && quality !== 'low';
+  const m = physical
+    ? new THREE.MeshPhysicalMaterial({ vertexColors: true, clearcoat: 1, clearcoatRoughness: 0.06, envMapIntensity: 1.1 })
+    : new THREE.MeshStandardMaterial({ vertexColors: true });
+  m.name = src.name;
+  if (doubleSide) m.side = THREE.DoubleSide;
+  return patchVehicleMaterial(m);
+}
+let sharedGlass = null,
+  sharedWheel = null;
+
+/** Sets the colour of every paint-class vertex (per-instance copy of the colour attribute). */
+function repaint(mesh, hex) {
+  const src = mesh.geometry.attributes.color;
+  if (!src || src.itemSize !== 4) return;
+  const c = new THREE.Color(hex),
+    out = new Float32Array(src.count * 4);
+  for (let i = 0; i < src.count; i++) {
+    const a = src.getW(i),
+      paint = Math.abs(a * 15 - 1) < 0.5;
+    out[i * 4] = paint ? c.r : src.getX(i);
+    out[i * 4 + 1] = paint ? c.g : src.getY(i);
+    out[i * 4 + 2] = paint ? c.b : src.getZ(i);
+    out[i * 4 + 3] = a;
+  }
+  if (!mesh.userData.ownGeometry) {
+    const g = new THREE.BufferGeometry();
+    for (const k in mesh.geometry.attributes) g.setAttribute(k, mesh.geometry.attributes[k]);
+    g.setIndex(mesh.geometry.index);
+    g.boundingSphere = mesh.geometry.boundingSphere;
+    g.boundingBox = mesh.geometry.boundingBox;
+    mesh.geometry = g;
+    mesh.userData.ownGeometry = true;
+  }
+  mesh.geometry.setAttribute('color', new THREE.BufferAttribute(out, 4));
+}
+
+const PLATE_LETTERS = 'ABCDEFGHJKLMNPRSTUVWXYZ';
+/** Random Frankfurt number plate, e.g. "F-KM 2741". */
+export function randomPlate() {
+  const n = 1 + Math.floor(rnd() * 2);
+  let l = '';
+  for (let i = 0; i < n; i++) l += PLATE_LETTERS[Math.floor(rnd() * PLATE_LETTERS.length)];
+  return `F-${l} ${1 + Math.floor(rnd() * (n === 2 ? 999 : 9999))}`;
+}
+
+/** Canvas texture: front plate in the top half, rear plate in the bottom half (matches the plate UVs). */
+function plateTexture(text) {
+  const cv = document.createElement('canvas');
+  cv.width = 256;
+  cv.height = 128;
+  const g = cv.getContext('2d');
+  const [city, rest] = text.split('-');
+  for (const y0 of [0, 64]) {
+    g.fillStyle = '#111';
+    g.fillRect(0, y0, 256, 64);
+    g.fillStyle = '#f4f4f0';
+    g.fillRect(3, y0 + 3, 250, 58);
+    g.fillStyle = '#1d3f9e';
+    g.fillRect(3, y0 + 3, 24, 58);
+    g.fillStyle = '#f5d000';
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      g.fillRect(15 + Math.cos(a) * 7 - 1, y0 + 20 + Math.sin(a) * 7 - 1, 2, 2);
+    }
+    g.fillStyle = '#fff';
+    g.font = 'bold 15px Arial, sans-serif';
+    g.textAlign = 'center';
+    g.fillText('D', 15, y0 + 52);
+    g.fillStyle = '#111';
+    g.font = 'bold 46px "Arial Narrow", "Roboto Condensed", Arial, sans-serif';
+    g.textAlign = 'left';
+    const cw = g.measureText(city).width * 0.82;
+    g.save();
+    g.translate(36, y0 + 50);
+    g.scale(0.82, 1);
+    g.fillText(city, 0, 0);
+    g.fillText(rest, (cw + 30) / 0.82, 0);
+    g.restore();
+    const sx = 36 + cw + 15;
+    g.fillStyle = '#2a7a3a';
+    g.beginPath();
+    g.arc(sx, y0 + 22, 8, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#b02a2a';
+    g.beginPath();
+    g.arc(sx, y0 + 42, 7, 0, Math.PI * 2);
+    g.fill();
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
 
 const SUSPENSION = 0.32;
+const SIREN_BLUE = [0x2050ff, 0x3a64ff]; // German blue lights
 const UP = new THREE.Vector3(0, 1, 0);
 const _v = new THREE.Vector3(),
   _q = new THREE.Quaternion();
@@ -87,20 +228,43 @@ export class Vehicle {
     this.length = ud.length;
     this.sport = kind === 'coupe';
     this.isPolice = kind === 'police';
+    this.type = VEHICLE_TYPES[kind] || null;
+    this.drivable = ud.drivable !== false;
     this.model = src.clone(true);
-    const fixedLivery = kind === 'taxi' || kind === 'police' || kind === 'van';
-    this.paint = fixedLivery ? null : (paint ?? rnd.pick(CAR_PAINTS));
+    this.paint = FIXED_LIVERY.has(kind) ? null : (paint ?? rnd.pick(CAR_PAINTS));
+    this.plateText = randomPlate();
     const matCache = new Map();
     this.model.traverse((o) => {
       if (!o.isMesh) return;
       o.castShadow = true;
       o.receiveShadow = false;
       const m = o.material;
-      if (!matCache.has(m)) matCache.set(m, m.clone());
+      if (m.name === 'glass') {
+        if (!sharedGlass) {
+          sharedGlass = m.clone();
+          Object.assign(sharedGlass, { opacity: 0.5, roughness: 0.02, metalness: 0.1, envMapIntensity: 1.6 });
+          sharedGlass.color.setHex(0x0c1419);
+        }
+        o.material = sharedGlass;
+        o.castShadow = false;
+        return;
+      }
+      if (m.name === 'wheel_vc') {
+        sharedWheel ||= bodyMaterial(m, false);
+        o.material = sharedWheel;
+        return;
+      }
+      if (!matCache.has(m)) matCache.set(m, m.name === 'body_vc' ? bodyMaterial(m, true) : m.clone());
       o.material = matCache.get(m);
       if (m.name === 'body_vc') {
         this.bodyMesh = o;
-        if (this.paint != null) recolor(o, { paint: ud.paint }, { paint: this.paint }, 0.05);
+        if (this.paint != null) repaint(o, this.paint);
+      }
+      if (m.name === 'plate') {
+        this.plateTex = plateTexture(this.plateText);
+        o.material.map = this.plateTex;
+        o.material.color.setHex(0xffffff);
+        o.castShadow = false;
       }
     });
     this.materials = [...matCache.values()];
@@ -179,7 +343,13 @@ export class Vehicle {
     vc.setIndexForwardAxis = 2; // Rapier names this setter "setIndexForwardAxis"
     vc.indexUpAxis = 1;
     for (const w of this.wheels)
-      vc.addWheel({ x: w.position.x, y: 0, z: w.position.z }, { x: 0, y: -1, z: 0 }, { x: -1, y: 0, z: 0 }, SUSPENSION, this.ud.wheelRadius);
+      vc.addWheel(
+        { x: this.ud.physTrack ? (Math.sign(w.position.x) * this.ud.physTrack) / 2 : w.position.x, y: 0, z: w.position.z },
+        { x: 0, y: -1, z: 0 },
+        { x: -1, y: 0, z: 0 },
+        SUSPENSION,
+        this.ud.wheelRadius,
+      );
     for (let i = 0; i < 4; i++) {
       vc.setWheelSuspensionStiffness(i, 34);
       vc.setWheelSuspensionCompression(i, 3.4);
@@ -213,7 +383,7 @@ export class Vehicle {
     this.driver = ch;
     if (!ch) return;
     this.model.add(ch.root);
-    ch.root.position.set(0.38, this.ud.seatY + 0.2 - 0.98, this.ud.seatZ - 0.05);
+    ch.root.position.set(this.ud.seatX ?? 0.38, this.ud.seatY + 0.2 - 0.98, this.ud.seatZ - 0.05);
     ch.root.rotation.set(0, 0, 0);
     ch.play('sit', 0);
   }
@@ -299,13 +469,15 @@ export class Vehicle {
   respray() {
     if (this.paint == null || !this.bodyMesh) return;
     const next = rnd.pick(CAR_PAINTS.filter((c) => c !== this.paint));
-    recolor(this.bodyMesh, { paint: this.paint }, { paint: next }, 0.05);
+    repaint(this.bodyMesh, next);
     this.paint = next;
   }
 
   /** Physics-side update for dynamic vehicles (call every fixed step). */
   step(dt) {
     if (!this.vc) return;
+    // parked cars at rest need no suspension raycasts
+    if (this.mode === 'parked' && this.body.isSleeping()) return;
     this.vc.updateVehicle(dt);
     this.impactCooldown = Math.max(0, this.impactCooldown - dt);
     const v = this.body.linvel();
@@ -345,8 +517,8 @@ export class Vehicle {
     if (L.indicator_R) L.indicator_R.emissiveIntensity = this.indicator === 1 || this.indicator === 2 ? blink : 0;
     if (L.siren) {
       L.siren.emissiveIntensity = this.siren ? (Math.sin(t * 22) > 0 ? 5 : 0.2) : 0.3;
-      if (this.siren) L.siren.emissive.setHex(Math.sin(t * 11) > 0 ? 0x2050ff : 0xff2020);
-      else L.siren.emissive.setHex(0x2050ff);
+      const sc = this.ud.sirenColors || SIREN_BLUE;
+      L.siren.emissive.setHex(this.siren && Math.sin(t * 11) <= 0 ? sc[1] : sc[0]);
     }
     if (L.taxi_sign) L.taxi_sign.emissiveIntensity = 0.4 + night * 1.5;
     for (let i = 0; i < 4; i++) {
@@ -361,7 +533,17 @@ export class Vehicle {
         w.rotation.x = this.wheelSpin;
       }
     }
-    if (this.spot) this.spot.intensity = isPlayerCar && !this.dead ? night * 60 : 0;
+    if (this.spot) {
+      // the shared headlight stays a direct child of the scene (see sharedHeadlight) and follows the car
+      const spot = this.spot;
+      spot.intensity = isPlayerCar && !this.dead ? night * 60 : 0;
+      if (isPlayerCar) {
+        this.mesh.updateMatrixWorld();
+        this.mesh.localToWorld(spot.position.set(0, 0, this.length / 2));
+        this.mesh.localToWorld(spot.target.position.set(0, -0.8, this.length / 2 + 12));
+        spot.target.updateMatrixWorld();
+      }
+    }
     this.driver?.update(dt);
     // damage smoke from the bonnet
     if (this.health < MAX_HEALTH * 0.45) {
@@ -376,23 +558,49 @@ export class Vehicle {
   }
 
   /** Headlight spot (only the player's car gets one). */
+  /**
+   * Moves the single shared headlight spot onto this car. One spot exists for the whole game
+   * (created at startup): adding a new light later would make every material recompile.
+   */
   ensureSpotlight() {
     if (this.spot) return;
-    this.spot = new THREE.SpotLight(0xfff0d8, 0, 70, 0.55, 0.5, 1.2);
-    this.spot.position.set(0, 0, this.length / 2);
-    this.spot.target.position.set(0, -0.8, this.length / 2 + 12);
-    this.mesh.add(this.spot, this.spot.target);
+    const spot = sharedHeadlight();
+    if (spot.owner && spot.owner !== this) spot.owner.spot = null;
+    spot.owner = this;
+    this.spot = spot;
   }
 
   destroy() {
+    if (this.spot) {
+      // release the shared headlight (it stays in the scene, switched off)
+      this.spot.intensity = 0;
+      this.spot.owner = null;
+      this.spot = null;
+    }
     // the controller references the body, so it must go first
     if (this.vc) ctx.world.removeVehicleController(this.vc);
     ctx.world.removeRigidBody(this.body);
     this.destroyed = true;
     ctx.scene.remove(this.mesh);
     for (const m of this.materials) m.dispose();
+    this.plateTex?.dispose();
     if (this.driver) ctx.peds?.reclaim(this.takeDriver());
   }
+}
+
+let headlight = null;
+/**
+ * The player's single headlight spot. It is always a direct, visible child of the scene:
+ * if a light ever stops being counted (removed, or inside a hidden car), every material
+ * in the city recompiles at once, which froze the game for seconds on integrated GPUs.
+ */
+export function sharedHeadlight() {
+  if (!headlight) {
+    headlight = new THREE.SpotLight(0xfff0d8, 0, 70, 0.55, 0.5, 1.2);
+    headlight.position.set(0, -50, 0);
+    ctx.scene.add(headlight, headlight.target);
+  }
+  return headlight;
 }
 
 export class VehicleManager {
@@ -417,7 +625,7 @@ export class VehicleManager {
     let best = null,
       bd = max;
     for (const c of this.list) {
-      if (filter && !filter(c)) continue;
+      if (!c.drivable || (filter && !filter(c))) continue;
       const q = c.body.translation();
       const d = Math.hypot(q.x - p.x, q.z - p.z);
       if (d < bd) {

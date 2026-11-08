@@ -22,6 +22,7 @@ const GAMEPAD_BUTTONS = {
   unstuck: [13], // d-pad down
   map: [8], // back/view
   pause: [9], // start/menu
+  phone: [5], // RB
 };
 
 class Input {

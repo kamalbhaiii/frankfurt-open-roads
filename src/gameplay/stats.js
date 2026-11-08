@@ -3,8 +3,8 @@
  */
 export const STAT_LABELS = {
   playTime: ['Time played', 'time'],
-  missionsPassed: ['Story missions passed', 'int'],
   jobsDone: ['Jobs completed', 'int'],
+  photosPosted: ['Instagram posts', 'int'],
   racesWon: ['Races won', 'int'],
   postcards: ['Postcards found', 'int'],
   moneyEarned: ['Money earned', 'money'],

@@ -7,7 +7,7 @@ import { events } from './events.js';
 
 /** Default key bindings: action -> [primary, secondary] KeyboardEvent.code values. */
 export const DEFAULT_BINDINGS = {
-  forward: ['KeyW', 'ArrowUp'],
+  forward: ['KeyW', ''],
   back: ['KeyS', 'ArrowDown'],
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
@@ -21,6 +21,7 @@ export const DEFAULT_BINDINGS = {
   radio: ['KeyQ', ''],
   job: ['KeyJ', ''],
   map: ['KeyM', ''],
+  phone: ['ArrowUp', ''],
   timeSpeed: ['KeyT', ''],
   pause: ['Escape', 'KeyP'],
 };
@@ -40,9 +41,12 @@ export const ACTION_LABELS = {
   radio: 'Next radio station',
   job: 'Start / stop vehicle job',
   map: 'Open map',
+  phone: 'Phone',
   timeSpeed: 'Change time speed',
   pause: 'Pause menu',
 };
+
+const BINDINGS_VERSION = 2;
 
 export const DEFAULT_SETTINGS = {
   // display
@@ -72,7 +76,9 @@ export const DEFAULT_SETTINGS = {
 class Settings {
   constructor() {
     const saved = storage.get(STORAGE_KEYS.settings, {});
-    this.values = { ...DEFAULT_SETTINGS, ...saved, bindings: { ...DEFAULT_BINDINGS, ...(saved.bindings || {}) } };
+    // bindings v2: the up arrow opens the phone instead of driving forward; older saves get the new defaults
+    const bindings = saved.bindingsVersion === BINDINGS_VERSION ? { ...DEFAULT_BINDINGS, ...(saved.bindings || {}) } : { ...DEFAULT_BINDINGS };
+    this.values = { ...DEFAULT_SETTINGS, ...saved, bindings, bindingsVersion: BINDINGS_VERSION };
   }
   get(key) {
     return this.values[key];

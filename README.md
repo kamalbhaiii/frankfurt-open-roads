@@ -5,8 +5,10 @@ An open-world driving game that runs in the browser, set in Frankfurt's real cit
 ## Play
 The game is a folder build served by a small local web server. Opening `dist/index.html` directly won't work, because browsers block textures loaded from a double-clicked file.
 
-- **Easiest:** double-click **`Play.bat`**. It installs dependencies and builds the game if needed, then opens it in your browser.
-- **Terminal:** `npm start` builds the game and opens it; `npm run serve` opens an existing build. Stop the server with Ctrl+C.
+- **Easiest:** double-click **`Play.bat`**. It installs dependencies if needed, rebuilds the game from the current `src/`, then opens it in your browser.
+- **Terminal:** run `npm install` once, then `npm start` to rebuild and open the game. To rebuild without opening a browser, run `npm run build`; to serve the latest build, run `npm run serve`. Stop the server with Ctrl+C.
+
+`Play.bat` and `npm start` rebuild automatically. If you use `npm run serve`, run `npm run build` first; serving `dist/` without rebuilding can show an older version. After rebuilding, refresh the browser with **Ctrl+F5** to bypass its cache.
 
 Graphics adapt to your PC automatically (**Settings → Graphics quality → Auto**). You can also pick Low, Medium, High or Ultra.
 

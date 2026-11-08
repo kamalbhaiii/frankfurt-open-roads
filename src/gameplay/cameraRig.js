@@ -106,7 +106,7 @@ export class CameraRig {
 
   firstPerson(car, dt) {
     const camera = ctx.camera;
-    const head = new THREE.Vector3(0.38, car.ud.seatY + 0.75 - car.H0, car.ud.seatZ - 0.15);
+    const head = new THREE.Vector3(car.ud.seatX ?? 0.38, car.ud.seatY + 0.75 - car.H0, car.ud.seatZ - 0.15);
     car.mesh.localToWorld(head);
     camera.position.copy(head);
     const behind = input.down('lookBehind') ? Math.PI : 0;

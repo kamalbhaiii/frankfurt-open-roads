@@ -32,7 +32,7 @@ const result = await esbuild.build({
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(path.join(out, 'game.js'), result.outputFiles[0].text);
-const css = fs.readFileSync('src/ui/styles.css', 'utf8');
+const css = ['src/ui/styles.css', 'src/ui/phone.css'].map((f) => fs.readFileSync(f, 'utf8')).join('\n');
 const html = fs
   .readFileSync('src/index.html', 'utf8')
   .replace('/*STYLES*/', () => css)

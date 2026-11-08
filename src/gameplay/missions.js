@@ -1,6 +1,6 @@
 /**
- * Mission runner. A mission is a list of steps executed in order; jobs generate a
- * new list each round. Step types:
+ * Activity runner for jobs and races. An activity is a list of steps executed in order;
+ * jobs generate a new list each round (single-round jobs end after one). Step types:
  *   say {text, ms}                    – subtitle line
  *   spawnVehicle {ref, kind, at}      – mission vehicle (at: {x,z,yaw})
  *   enter {ref|kind|any, text}        – get into a vehicle
@@ -12,18 +12,21 @@
  *   checkpoints {points, text}        – race checkpoints
  *   countdown {}                      – 3-2-1 with controls locked
  *   reward {amount, text}             – pays out mid-job (taxi fares)
+ *   wait {seconds, text, stopped}     – stand still for a while (boarding, loading)
  *   call {fn}                         – custom code
  */
 import { ctx } from '../core/context.js';
 import { events } from '../core/events.js';
+import { settings, keyName } from '../core/settings.js';
 import { formatMoney } from '../core/math.js';
 import { roadSpot } from './places.js';
-import { STORY, RACES, JOBS } from './missionData.js';
+import { RACES } from './missionData.js';
+import { JOBS, jobById, jobKindOf } from './jobs.js';
 
 export class MissionRunner {
   constructor() {
     this.active = null;
-    this.progress = { story: 0, races: {}, jobsDone: 0 };
+    this.progress = { races: {}, jobsDone: 0, jobs: {} };
     this.giverMarkers = [];
     this.giverBlips = [];
     this.objective = '';
@@ -37,12 +40,6 @@ export class MissionRunner {
     this.giverMarkers = [];
     this.giverBlips = [];
     if (this.active) return;
-    const next = STORY[this.progress.story];
-    if (next) {
-      const at = next.start();
-      this.giverMarkers.push(ctx.markers.add({ kind: 'beam', x: at.x, z: at.z, r: 1.6, color: 0xf3c544, onFoot: true, onEnter: () => this.offer(next) }));
-      this.giverBlips.push(ctx.blips.add('story', at.x, at.z, { label: `Story: ${next.title}`, short: false }));
-    }
     for (const race of RACES) {
       const at = race.start();
       this.giverMarkers.push(
@@ -56,13 +53,13 @@ export class MissionRunner {
   /** Walking/driving into a start marker launches the mission. */
   offer(def) {
     if (ctx.wanted.level > 0) {
-      events.emit('help', { text: 'Lose the police before starting a mission.' });
+      events.emit('help', { text: 'Lose the police before starting.' });
       return;
     }
     this.start(def);
   }
 
-  /** Starts a vehicle job (taxi/delivery) if the player is in the right vehicle. */
+  /** J key: starts the job that belongs to the current vehicle, or stops the running job. */
   toggleJob() {
     if (this.active?.type === 'job') {
       this.end(false, 'Job stopped');
@@ -70,21 +67,43 @@ export class MissionRunner {
     }
     if (this.active) return;
     const car = ctx.player.vehicle;
-    const job = car && JOBS.find((j) => j.vehicle === car.kind);
+    const job = car && JOBS.find((j) => j.vehicle === jobKindOf(car));
     if (!job) {
-      events.emit('help', { text: 'Jobs: get into a Taxi or a Delivery van and press J.' });
+      events.emit('help', {
+        text: `Jobs: press J in a taxi, courier van, bus, tow truck or ambulance (depots are on the map). Uber and Uber Eats are in the phone (${keyName(settings.get('bindings').phone[0])}).`,
+      });
       return;
     }
-    this.start(job);
+    this.startJob(job.id);
   }
 
-  start(def) {
+  /** Starts a job by id; opts are passed to the job's generator (e.g. an Uber request). */
+  startJob(id, opts) {
+    const def = jobById(id);
+    if (!def || this.active) return false;
+    if (ctx.wanted.level > 0) {
+      events.emit('help', { text: 'Lose the police before starting a job.' });
+      return false;
+    }
+    const car = ctx.player.vehicle;
+    if (!car || (def.vehicle !== 'any' && jobKindOf(car) !== def.vehicle)) {
+      events.emit('help', { text: `${def.title}: you need to be in the right vehicle.` });
+      return false;
+    }
+    this.start(def, opts);
+    return true;
+  }
+
+  start(def, opts) {
     if (this.active) return;
     this.active = {
       def,
       type: def.type,
-      steps: def.type === 'job' ? def.generate(this) : def.steps(this),
+      steps: [],
+      opts,
       index: -1,
+      cleanup: [],
+      onFrame: null,
       refs: {},
       markers: [],
       blips: [],
@@ -93,6 +112,7 @@ export class MissionRunner {
       startTime: ctx.simTime,
     };
     if (def.type === 'job') this.active.refs.jobCar = ctx.player.vehicle;
+    this.active.steps = def.type === 'job' ? def.generate(this, opts) : def.steps(this);
     this.setupWorld();
     events.emit('mission:start', { mission: def });
     this.next();
@@ -111,7 +131,11 @@ export class MissionRunner {
     if (!s) {
       if (a.type === 'job') {
         a.round++;
-        a.steps = a.def.generate(this);
+        if (a.def.single) {
+          this.end(true);
+          return;
+        }
+        a.steps = a.def.generate(this, a.opts);
         a.index = -1;
         this.next();
         return;
@@ -141,6 +165,10 @@ export class MissionRunner {
     const b = ctx.blips.add(type, x, z, opts);
     this.active.blips.push(b);
     return b;
+  }
+  /** Pays out during a job (fares, tips). */
+  pay(amount, text) {
+    this.enterStep({ type: 'reward', amount, text, state: {} });
   }
   setObjective(text) {
     this.objective = text;
@@ -217,6 +245,10 @@ export class MissionRunner {
       case 'call':
         s.fn(this, a);
         break;
+      case 'wait':
+        s.state.t = s.seconds;
+        this.setObjective(s.text);
+        break;
       default:
         break;
     }
@@ -246,6 +278,7 @@ export class MissionRunner {
   update(dt) {
     const a = this.active;
     if (!a) return;
+    a.onFrame?.(dt);
     if (this.timer != null) {
       this.timer -= dt;
       if (this.timer <= 0) {
@@ -340,6 +373,12 @@ export class MissionRunner {
       }
       case 'loseHeat':
         return ctx.wanted.level === 0;
+      case 'wait': {
+        const v = player.vehicle;
+        if (s.stopped && v && Math.abs(v.kmh || 0) > 3) return false;
+        s.state.t -= dt;
+        return s.state.t <= 0;
+      }
       case 'checkpoints':
         if (s.state.hit) {
           s.state.hit = false;
@@ -388,7 +427,11 @@ export class MissionRunner {
     if (def.type === 'job') {
       ctx.stats.add('jobsDone', a.round);
       this.progress.jobsDone += a.round;
-      events.emit('mission:ended', { mission: def, text: `${def.title} finished · ${a.round} completed · ${formatMoney(a.earned)} earned`, reason });
+      const js = (this.progress.jobs[def.id] ||= { done: 0, earned: 0 });
+      js.done += a.round;
+      js.earned += a.earned;
+      if (!def.single) events.emit('mission:ended', { mission: def, text: `${def.title} finished · ${a.round} completed · ${formatMoney(a.earned)} earned`, reason });
+      else if (!passed) events.emit('mission:ended', { mission: def, text: `${def.title} cancelled`, reason });
     } else if (passed) {
       if (def.type === 'race') {
         const time = ctx.simTime - a.raceStart;
@@ -398,10 +441,6 @@ export class MissionRunner {
         reward = medal >= 0 ? def.rewards[medal] : 0;
         if (medal === 0) ctx.stats.add('racesWon', 1);
         a.resultText = `${time.toFixed(1)} s · ${['Gold', 'Silver', 'Bronze'][medal] || 'No medal'}`;
-      } else {
-        reward = def.reward;
-        this.progress.story++;
-        ctx.stats.add('missionsPassed', 1);
       }
       if (reward) ctx.player.addMoney(reward, def.title);
       events.emit('mission:passed', { mission: def, reward, text: a.resultText });
@@ -409,13 +448,19 @@ export class MissionRunner {
     }
     this.cleanup();
     this.setupWorld();
-    if (passed && def.type === 'story') ctx.game.autosave();
   }
 
   cleanup() {
     const a = this.active;
     if (!a) return;
     this.clearStepWorld();
+    for (const fn of a.cleanup) {
+      try {
+        fn();
+      } catch (e) {
+        console.warn('[missions] cleanup failed', e);
+      }
+    }
     this.timer = null;
     ctx.game.controlsLocked = false;
     for (const k in a.refs) {
@@ -438,7 +483,7 @@ export class MissionRunner {
     return { ...this.progress };
   }
   restore(p) {
-    this.progress = { story: 0, races: {}, jobsDone: 0, ...(p || {}) };
+    this.progress = { races: {}, jobsDone: 0, jobs: {}, ...(p || {}) };
     this.setupWorld();
   }
 }

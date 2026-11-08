@@ -9,7 +9,8 @@ import { input } from '../core/input.js';
 import { storage } from '../core/storage.js';
 import { formatMoney } from '../core/math.js';
 import { POSTCARD_COUNT } from './services.js';
-import { STORY, RACES } from './missionData.js';
+import { RACES } from './missionData.js';
+import { JOBS, hasBeacon } from './jobs.js';
 import { Stats } from './stats.js';
 
 export const SAVE_VERSION = 1;
@@ -150,9 +151,11 @@ export class Game {
   /** Discrete per-frame actions (edge-triggered input). */
   handleActions() {
     if (input.pressed('pause')) {
+      if (ctx.phone.open || ctx.phone.camera) return;
       ctx.menus.openPause();
       return;
     }
+    if (input.pressed('phone') && this.state === 'playing') ctx.phone.toggle();
     if (input.pressed('map')) {
       ctx.menus.openPause('map');
       return;
@@ -164,7 +167,7 @@ export class Game {
       else if (!player.enterVehicle()) events.emit('notify', { text: 'No vehicle nearby' });
     }
     if (input.pressed('horn') && player.vehicle) {
-      if (player.vehicle.isPolice) player.vehicle.siren = !player.vehicle.siren;
+      if (hasBeacon(player.vehicle)) player.vehicle.siren = !player.vehicle.siren;
       else ctx.audio.horn(null, 1);
       const p = player.position;
       ctx.peds.scare(p.x, p.z, 14);
@@ -180,7 +183,9 @@ export class Game {
   simulate(dt) {
     this.accumulator += dt;
     let n = 0;
-    while (this.accumulator >= FIXED_STEP && n < 4) {
+    // at most 2 catch-up steps: one slow frame must not trigger several heavy physics steps
+    // (that spirals into more slow frames); below 30 fps the simulation slows down instead
+    while (this.accumulator >= FIXED_STEP && n < 2) {
       ctx.player.step(FIXED_STEP);
       ctx.traffic.update(FIXED_STEP, ctx.player.position);
       ctx.vehicles.step(FIXED_STEP);
@@ -189,17 +194,17 @@ export class Game {
       ctx.simTime += FIXED_STEP;
       n++;
     }
-    if (n === 4) this.accumulator = 0;
+    if (n === 2) this.accumulator = Math.min(this.accumulator, FIXED_STEP);
   }
 
   // ---------------------------------------------------------------- save / load
   completion() {
     const m = ctx.missions.progress;
-    const story = Math.min(m.story, STORY.length) / STORY.length;
+    // every job tried at least 3 times, both races, all postcards
+    const jobs = JOBS.reduce((n, j) => n + Math.min(m.jobs?.[j.id]?.done || 0, 3), 0) / (JOBS.length * 3);
     const races = RACES.filter((r) => m.races[r.id]).length / RACES.length;
     const cards = ctx.services.found.size / POSTCARD_COUNT;
-    const jobs = Math.min(m.jobsDone, 15) / 15;
-    return Math.round((story * 0.45 + races * 0.15 + cards * 0.25 + jobs * 0.15) * 100);
+    return Math.round((jobs * 0.55 + races * 0.15 + cards * 0.3) * 100);
   }
 
   district(p) {
@@ -225,6 +230,7 @@ export class Game {
       gameTime: ctx.env.gameTime,
       player: { x: p.x, z: p.z, yaw: player.vehicle ? player.vehicle.yaw : player.yaw, health: player.health, armor: player.armor, money: player.money },
       missions: ctx.missions.serialize(),
+      phone: ctx.phone.serialize(),
       services: ctx.services.serialize(),
       stats: ctx.stats.values,
     };
@@ -270,6 +276,7 @@ export class Game {
     ctx.stats = new Stats(data.stats);
     ctx.services.restore(data.services);
     ctx.missions.restore(data.missions);
+    ctx.phone.restore(data.phone);
     if (ctx.env.timeMode !== 'real') ctx.env.gameTime = data.gameTime;
     return true;
   }
@@ -285,5 +292,7 @@ export class Game {
     ctx.cameraRig.yaw = s.yaw + Math.PI;
     ctx.services.restore({});
     ctx.missions.restore({});
+    ctx.phone.restore({});
+    ctx.phone.welcome();
   }
 }

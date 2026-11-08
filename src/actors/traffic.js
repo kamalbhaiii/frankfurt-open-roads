@@ -110,7 +110,12 @@ export class Traffic {
   }
 
   get target() {
-    return Math.round(QUALITY[ctx.quality].traffic * settings.get('trafficDensity') * this.factor);
+    const district = ctx.player?.position && ctx.game?.district(ctx.player.position);
+    // Keep a modest daytime traffic uplift around the station and retail core;
+    // these districts draw workers, visitors and shoppers beyond their residents.
+    const localFlow =
+      ['Innenstadt', 'Bahnhofsviertel'].includes(district) && this.clock.hour >= 7 && this.clock.hour < 21 ? 1.08 : 1;
+    return Math.round(QUALITY[ctx.quality].traffic * settings.get('trafficDensity') * this.factor * localFlow);
   }
 
   aiCars() {

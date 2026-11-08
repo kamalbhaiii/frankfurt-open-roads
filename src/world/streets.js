@@ -10,10 +10,11 @@ import * as THREE from 'three';
 import { ctx } from '../core/context.js';
 import { KERB, RC, roadWidth } from '../core/config.js';
 import { area, hash, offsetLine } from '../core/math.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GeoBuilder, addFlatPoly } from './geometry.js';
 import { surfaceMaterial, markingMaterial, atlasUV } from './materials.js';
 
-const SUPER = 500;
+const SUPER = 750;
 const tileKey = (x, z) => `${Math.floor(x / SUPER)},${Math.floor(z / SUPER)}`;
 
 /** Lazily created GeoBuilders keyed by super tile. */
@@ -618,6 +619,15 @@ function buildMarkings(data, detail) {
     }
   }
 
-  tyres.emit(mats.mark, { shadow: true, order: 1 });
-  dec.emit(mats.mark, { shadow: true, order: 2 });
+  // one paint mesh per tile: tyre wear first so the paint draws over it
+  for (const [k, gb] of dec.map) {
+    const t = tyres.map.get(k);
+    const parts = [t?.count ? t.build() : null, gb.count ? gb.build() : null].filter(Boolean);
+    if (!parts.length) continue;
+    const geo = parts.length > 1 ? mergeGeometries(parts) : parts[0];
+    const me = new THREE.Mesh(geo, mats.mark);
+    me.receiveShadow = true;
+    me.renderOrder = 1;
+    ctx.scene.add(me);
+  }
 }

@@ -280,8 +280,12 @@ export class RenderPipeline {
     }
   }
 
-  /** Called once per frame before render with the real frame time (for adaptive quality). */
-  update(dt) {
+  /**
+   * Called once per frame before render with the real frame time and the CPU time the game
+   * logic took this frame (seconds). Resolution/effects are only reduced when the GPU is the
+   * bottleneck: lowering them can't fix a CPU-bound frame and would only blur the image.
+   */
+  update(dt, cpu = 0) {
     if (ctx.quality !== this.tier) this.configure();
     this.frame++;
     if (!this.adaptive || document.hidden || dt <= 0) return;
@@ -291,10 +295,13 @@ export class RenderPipeline {
       return;
     }
     this.ft = lerp(this.ft, dt, 0.06);
+    this.cpu = lerp(this.cpu ?? cpu, cpu, 0.06);
     this.cool -= dt;
     const target = 1 / this.q.targetFps;
-    const slow = this.ft > target * 1.15,
-      fast = this.ft < target * 0.97;
+    // GPU-bound when the time not spent in game logic (render submit + GPU wait) dominates
+    const cpuBound = this.cpu > (this.ft - this.cpu) * 1.2;
+    const slow = this.ft > target * 1.15 && !cpuBound,
+      fast = this.ft < target * 0.97 || (cpuBound && (this.scale < 1 || this.shed > 0));
     this.slowT = slow ? this.slowT + dt : 0;
     this.fastT = fast ? this.fastT + dt : 0;
     if (this.cool > 0) return;

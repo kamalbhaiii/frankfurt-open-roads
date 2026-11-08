@@ -46,7 +46,7 @@ export function buildGround(data, phys) {
     river,
   );
   const groundGeo = gGround.build();
-  mats.ground = surfaceMaterial('setts', { scale: 2, tint: 0xc9c6bf, rough: [0.75, 0.97], bomb: 'patch', macro: 0.16, puddles: 0.7, frag: 'col *= 1.5;' });
+  mats.ground = surfaceMaterial('slabs', { scale: 1.8, tint: 0xc4c2be, rough: [0.75, 0.97], bomb: 'patch', macro: 0.16, puddles: 0.7 });
   const ground = new THREE.Mesh(groundGeo, mats.ground);
   ground.receiveShadow = true;
   scene.add(ground);
@@ -143,14 +143,10 @@ export function buildGround(data, phys) {
 
   // ---- footpaths and pedestrian zones (ribbons), cobbles on Altstadt lanes
   mats.cobble = surfaceMaterial('cobble', { scale: 1.2, tint: 0xc8c6c2, rough: [0.55, 0.95], bomb: 'free', macro: 0.14, puddles: 1, wetDark: 0.55, offset: [-2, -4] });
-  mats.ped = surfaceMaterial('granite', { scale: 2.4, tint: 0xdedbd6, rough: [0.5, 0.85], bomb: 'patch', macro: 0.1, puddles: 0.6, offset: [-1, -2] });
-  mats.path = surfaceMaterial('slabs', { scale: 1.8, tint: 0xd2d0cc, rough: [0.7, 0.95], bomb: 'patch', macro: 0.1, puddles: 0.6, offset: [-1, -2] });
-  mats.setts = surfaceMaterial('setts', { scale: 2, tint: 0xd4d2ce, rough: [0.7, 0.95], bomb: 'patch', macro: 0.12, puddles: 0.7, vertexColors: true, offset: [-1, -2] });
+  mats.ped = mats.path = surfaceMaterial('slabs', { scale: 1.8, vertexColors: true, tint: 0xd2d0cc, rough: [0.7, 0.95], bomb: 'patch', macro: 0.1, puddles: 0.6, offset: [-1, -2] });
   const bCob = new TileBuckets(),
-    bPed = new TileBuckets(),
-    bPath = new TileBuckets(),
-    bSetts = new TileBuckets();
-  const cRed = new THREE.Color(1.15, 0.55, 0.45),
+    bPath = new TileBuckets();
+  const cRed = new THREE.Color(0.95, 0.5, 0.42),
     cGrey = new THREE.Color(0.95, 0.93, 0.9);
 
   // car-road nodes, to trim cobble overlays where they meet asphalt roads
@@ -198,15 +194,13 @@ export function buildGround(data, phys) {
       continue;
     }
     if (r.c === 8) continue;
-    if (r.c === 9) addRibbon((inAltstadt(x, z) && !r.bridge ? bCob : bPed).at(x, z), r.pts, w, 0.03, white);
-    else if (r.c === 11) addRibbon(bSetts.at(x, z), r.pts, w, 0.032, cRed);
-    else if (r.c === 12) addRibbon(bSetts.at(x, z), r.pts, w, 0.031, cGrey);
+    if (r.c === 9) addRibbon((inAltstadt(x, z) && !r.bridge ? bCob : bPath).at(x, z), r.pts, w, 0.03, white);
+    else if (r.c === 11) addRibbon(bPath.at(x, z), r.pts, w, 0.032, cRed);
+    else if (r.c === 12) addRibbon(bPath.at(x, z), r.pts, w, 0.031, cGrey);
     else addRibbon((inAltstadt(x, z) && !r.bridge ? bCob : bPath).at(x, z), r.pts, w, 0.03, white);
   }
   bCob.emit(mats.cobble);
-  bPed.emit(mats.ped);
   bPath.emit(mats.path);
-  bSetts.emit(mats.setts);
 
   buildStreets(data, phys);
 

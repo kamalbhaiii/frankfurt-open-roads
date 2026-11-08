@@ -103,6 +103,10 @@ export class Furniture {
       if (!tiles.has(k)) tiles.set(k, []);
       tiles.get(k).push([x, z, yaw]);
     }
+    // All standing lamps share ONE fixed body (thousands of separate bodies made every physics
+    // step ~3x slower); a lamp gets its own dynamic body only when a car knocks it over.
+    this.lampStatic = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const _o = new THREE.Vector3();
     for (const list of tiles.values()) {
       const tile = { ims: [], cx: 0, cz: 0, ...boundsOf(list.map(([x, , z]) => [x, z])) };
       for (const p of parts) {
@@ -119,15 +123,24 @@ export class Furniture {
         tile.cx += x / list.length;
         tile.cz += z / list.length;
         _q.setFromAxisAngle(UP, yaw);
-        // fixed until hit; becomes dynamic on impact
-        const body = world.createRigidBody(
-          RAPIER.RigidBodyDesc.fixed()
-            .setTranslation(x, KERB + 0.01, z)
-            .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w }),
-        );
-        world.createCollider(RAPIER.ColliderDesc.cylinder(4.0, 0.12).setTranslation(0, 4.0, 0).setDensity(820).setFriction(0.6), body);
-        world.createCollider(RAPIER.ColliderDesc.cuboid(0.16, 0.08, 0.9).setTranslation(0, 8.45, 0.9).setDensity(200), body);
-        const lamp = { body, x, z, yaw, fallen: false, tile, i, dyn: false };
+        const rot = { x: _q.x, y: _q.y, z: _q.z, w: _q.w };
+        const head = _o.set(0, 0, 0.9).applyQuaternion(_q);
+        const cols = [
+          world.createCollider(
+            RAPIER.ColliderDesc.cylinder(4.0, 0.12)
+              .setTranslation(x, KERB + 0.01 + 4.0, z)
+              .setRotation(rot)
+              .setFriction(0.6),
+            this.lampStatic,
+          ),
+          world.createCollider(
+            RAPIER.ColliderDesc.cuboid(0.16, 0.08, 0.9)
+              .setTranslation(x + head.x, KERB + 0.01 + 8.45, z + head.z)
+              .setRotation(rot),
+            this.lampStatic,
+          ),
+        ];
+        const lamp = { body: null, cols, x, z, yaw, fallen: false, tile, i, dyn: false };
         this.lamps.push(lamp);
         this.lampGrid.insert(x, z, lamp);
         _p.set(x, KERB + 0.01, z);
@@ -277,8 +290,23 @@ export class Furniture {
   }
 
   /** Knocks over lamps hit by moving dynamic vehicles and animates fallen ones. */
+  /** Replaces a standing lamp's static colliders with its own dynamic body. */
+  detachLamp(L) {
+    const { RAPIER, world } = ctx;
+    for (const c of L.cols) ctx.physics.removeStatic(c);
+    L.cols = [];
+    _q.setFromAxisAngle(UP, L.yaw);
+    L.body = world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(L.x, KERB + 0.01, L.z)
+        .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })
+        .setAngularDamping(0.3),
+    );
+    world.createCollider(RAPIER.ColliderDesc.cylinder(4.0, 0.12).setTranslation(0, 4.0, 0).setDensity(820).setFriction(0.6), L.body);
+    world.createCollider(RAPIER.ColliderDesc.cuboid(0.16, 0.08, 0.9).setTranslation(0, 8.45, 0.9).setDensity(200), L.body);
+  }
+
   update(dt, vehicles) {
-    const { RAPIER } = ctx;
     for (const car of vehicles) {
       if (car.mode === 'ai' || car.dead) continue;
       const v = car.body.linvel();
@@ -296,8 +324,7 @@ export class Furniture {
         if (Math.abs(lx) < car.width / 2 + 0.3 && Math.abs(lz) < car.length / 2 + 0.4 + spd * 0.06) {
           L.dyn = true;
           if (L.binItem?.bm) L.binItem.bm.setVisibleAt(L.binItem.id, false);
-          L.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
-          L.body.setAngularDamping(0.3);
+          this.detachLamp(L);
           L.body.applyImpulseAtPoint({ x: v.x * 140, y: 0, z: v.z * 140 }, { x: L.x, y: 2.5, z: L.z }, true);
           this.activeLamps.push(L);
           car.body.setLinvel({ x: v.x * 0.8, y: v.y, z: v.z * 0.8 }, true);
@@ -383,6 +410,7 @@ export const SIGN = {
   LIVING: 17, // 325.1 Verkehrsberuhigter Bereich
   LIVING_END: 18, // 325.2 Ende verkehrsberuhigter Bereich
   PED_ZONE_END: 19, // 242.2 Ende Fußgängerzone
+  WORK: 20, // Temporary transit works / game content under construction
 };
 /** [plate size (m), fraction of the plate height the shape covers] per cell. */
 const SIGN_DIM = [
@@ -406,6 +434,7 @@ const SIGN_DIM = [
   [0.9, 0.64],
   [0.9, 0.64],
   [0.8, 0.94],
+  [1.35, 0.94],
 ];
 
 function roundPoly(g, pts, r) {
@@ -579,6 +608,23 @@ function drawSignAtlas() {
       if (end) endLines();
     });
   }
+  cell(SIGN.WORK, () => {
+    rrect(8, 20, 240, 216, 8, '#f2b51b', BK, 10);
+    g.fillStyle = BK;
+    for (let x = -30; x < 286; x += 46) {
+      g.beginPath();
+      g.moveTo(x, 20);
+      g.lineTo(x + 22, 20);
+      g.lineTo(x - 20, 76);
+      g.lineTo(x - 42, 76);
+      g.closePath();
+      g.fill();
+    }
+    text('BAUSTELLE', 128, 126, 39, BK, 220, 800);
+    text('IM AUFBAU', 128, 170, 30, BK, 220, 800);
+    rrect(18, 194, 220, 30, 3, BK);
+    text('KEIN ZUGANG', 128, 209, 21, WH, 210, 800);
+  });
   for (const [i, flip] of [
     [SIGN.ONEWAY_R, false],
     [SIGN.ONEWAY_L, true],
@@ -924,6 +970,16 @@ function buildKit() {
   const K = {};
   // galvanised sign post, 1 m tall (scaled on Y per post)
   K.pole = [KC(0.032, 0.032, 1, 0, 0.5, 0, GALV, 8)];
+  // Temporary high-visibility closure for rail and station areas under construction.
+  K.workBarrier = [
+    KB(0.22, 0.07, 0.52, -1.05, 0.06, 0, ANTH),
+    KB(0.22, 0.07, 0.52, 1.05, 0.06, 0, ANTH),
+    KB(0.12, 0.76, 0.12, -1.05, 0.43, 0, ANTH),
+    KB(0.12, 0.76, 0.12, 1.05, 0.43, 0, ANTH),
+    KB(2.8, 0.56, 0.1, 0, 0.82, 0, POST_YEL),
+    ...[-1.08, -0.72, -0.36, 0, 0.36, 0.72, 1.08].map((x) => KB(0.14, 0.52, 0.025, x, 0.82, 0.064, ANTH)),
+    ...[-1.32, 1.32].map((x) => KB(0.16, 0.14, 0.16, x, 1.18, 0, 0xff6b00)),
+  ];
   // bus/tram stop pole with timetable case facing the pavement
   K.hpole = [
     KC(0.045, 0.05, 3.0, 0, 1.5, 0, 0x8c9296, 8),
@@ -971,7 +1027,11 @@ function buildKit() {
     ...[0.62, 0.74, 0.86].map((y) => KB(1.8, 0.09, 0.03, 0, y, -0.26 - (y - 0.6) * 0.25, WOOD, -0.25)),
   ];
   // Kreuzberger Bügel bike stand (arch in the Y-Z plane)
-  K.rack = [KC(0.024, 0.024, 0.45, 0, 0.225, -0.4, STEEL, 6), KC(0.024, 0.024, 0.45, 0, 0.225, 0.4, STEEL, 6), KT(0.4, 0.024, 0, 0.45, 0, STEEL, Math.PI, 4, 8)];
+  K.rack = [
+    KC(0.024, 0.024, 0.45, 0, 0.225, -0.4, STEEL, 6),
+    KC(0.024, 0.024, 0.45, 0, 0.225, 0.4, STEEL, 6),
+    KT(0.4, 0.024, 0, 0.45, 0, STEEL, Math.PI, 4, 8),
+  ];
   // city bike with mudguards; the frame is white so an instance colour tints it
   const wr = 0.33;
   K.bike = [
@@ -1281,9 +1341,50 @@ class StreetScene {
     this.junctions();
     this.crossings();
     this.stops();
+    this.transitWorksites();
     this.midBlock();
     this.pedZones();
     this.lampBins();
+  }
+
+  /** Mark the unfinished rail terminus as a deliberate work zone (Frankfurt Hbf). */
+  transitWorksites() {
+    // The stop/crowd reference point is the forecourt. Rail alignments sit about
+    // 120 m west of it, so anchor the works to the actual track throat.
+    const station = { x: -777, z: 492 };
+    const placed = [];
+    for (const rail of ctx.city.rails || []) {
+      if (rail.tram || rail.bridge || rail.pts.length < 2) continue;
+      let best = null;
+      for (let i = 0; i < rail.pts.length - 1; i++) {
+        const a = rail.pts[i],
+          b = rail.pts[i + 1];
+        const dx = b[0] - a[0],
+          dz = b[1] - a[1];
+        const length = Math.hypot(dx, dz);
+        const steps = Math.max(1, Math.ceil(length / 4));
+        for (let j = 0; j <= steps; j++) {
+          const t = j / steps;
+          const x = a[0] + dx * t,
+            z = a[1] + dz * t;
+          const d = Math.hypot(x - station.x, z - station.z);
+          if (d > 95 || (best && d >= best.d) || this.roadDist(x, z) < 4.5) continue;
+          best = { d, x, z, yaw: yawOf(dx, dz) };
+        }
+      }
+      if (!best || best.d > 95 || placed.some((p) => Math.hypot(p.x - best.x, p.z - best.z) < 2.8)) continue;
+      // Keep the closure on rail land and away from streets and existing structures.
+      const y = this.groundAt(best.x, best.z);
+      if (y == null || this.solid(best.x, y + 0.4, best.z, 1.1)) continue;
+      const yaw = best.yaw + Math.PI / 2;
+      this.add('workBarrier', best.x, y, best.z, yaw);
+      this.box(best.x, y, best.z, yaw, 1.4, 0.55, 0.12);
+      const facing = best.yaw + Math.PI;
+      this.post(best.x, best.z, y, facing, [SIGN.WORK], [SIGN.WORK]);
+      placed.push(best);
+      if (placed.length >= 12) break;
+    }
+    this.count.transitWorksites = placed.length;
   }
 
   junctions() {
@@ -1313,7 +1414,15 @@ class StreetScene {
           if (len < 1) continue;
           const q = pointAlong(path, Math.min(8, len));
           const L = Math.hypot(q.x - node[0], q.z - node[1]) || 1;
-          arms.push({ r, path, len, hw: roadWidth(r) / 2, dx: (q.x - node[0]) / L, dz: (q.z - node[1]) / L, flow: !r.oneway ? 'both' : dir > 0 ? 'out' : 'in' });
+          arms.push({
+            r,
+            path,
+            len,
+            hw: roadWidth(r) / 2,
+            dx: (q.x - node[0]) / L,
+            dz: (q.z - node[1]) / L,
+            flow: !r.oneway ? 'both' : dir > 0 ? 'out' : 'in',
+          });
         }
       }
       if (bridge || arms.length < 3) continue;
@@ -1353,7 +1462,8 @@ class StreetScene {
       return pair || cands.slice(0, 2);
     };
     let main = arms.filter((a) => rankOf(a.r.c) === best);
-    if (main.length === arms.length) main = best >= 4 ? [] : opposite(arms); // equal residential streets: rechts vor links
+    if (main.length === arms.length)
+      main = best >= 4 ? [] : opposite(arms); // equal residential streets: rechts vor links
     else if (main.length === 1) {
       let o = null,
         bd = 2;
@@ -1520,7 +1630,7 @@ class StreetScene {
         if (!road) continue;
         const rs = this.projectOn(road, p.x, p.z);
         let n = 0;
-        for (const side of [1, -1]) if (this.stop(road, rs + side * 6, side)) n++;
+        for (const side of [1, -1]) if (this.stop(road, rs + side * 6, side, true)) n++;
         if (n) {
           this.stopGrid.insert(p.x, p.z, { x: p.x, z: p.z });
           this.count.tramStops = (this.count.tramStops || 0) + 1;
@@ -1562,7 +1672,7 @@ class StreetScene {
   }
 
   /** One Haltestelle on the given side of road r at distance s: H pole, glass shelter (if it fits), bin. */
-  stop(r, s, side) {
+  stop(r, s, side, underConstruction = false) {
     const len = polylineLength(r.pts);
     if (s < 8 || s > len - 8) return false;
     const hw = roadWidth(r) / 2;
@@ -1584,8 +1694,9 @@ class StreetScene {
     const yawA = yawOf(-ax, -az);
     this.add('hpole', hp[0], KERB, hp[1], yawOf(-nx, -nz));
     this.cyl(hp[0], KERB, hp[1], 0.07, 1.5);
-    this.signs.push({ x: hp[0] - ax * 0.05, y: KERB + 2.72, z: hp[1] - az * 0.05, yaw: yawA, cell: SIGN.BUS });
-    this.signs.push({ x: hp[0] + ax * 0.05, y: KERB + 2.72, z: hp[1] + az * 0.05, yaw: yawA + Math.PI, cell: SIGN.BUS });
+    const stopSign = underConstruction ? SIGN.WORK : SIGN.BUS;
+    this.signs.push({ x: hp[0] - ax * 0.05, y: KERB + 2.72, z: hp[1] - az * 0.05, yaw: yawA, cell: stopSign });
+    this.signs.push({ x: hp[0] + ax * 0.05, y: KERB + 2.72, z: hp[1] + az * 0.05, yaw: yawA + Math.PI, cell: stopSign });
     this.claim(hp[0], hp[1], 0.4);
     // shelter: front edge 0.9 m behind the kerb, open towards the road
     const cx = p.x + nx * (hw + 1.75),
@@ -1748,7 +1859,8 @@ class StreetScene {
           const sx = p.x + nx * (hw - 0.4) + p.dx * 0.8,
             sz = p.z + nz * (hw - 0.4) + p.dz * 0.8;
           const sy = this.groundAt(sx, sz);
-          if (sy != null && this.ok(sx, sz, 0.22, { ped: true, y: sy, margin: 0.4 })) this.post(sx, sz, sy, yawOf(-p.dx, -p.dz), [SIGN.PED_ZONE], [SIGN.PED_ZONE_END]);
+          if (sy != null && this.ok(sx, sz, 0.22, { ped: true, y: sy, margin: 0.4 }))
+            this.post(sx, sz, sy, yawOf(-p.dx, -p.dz), [SIGN.PED_ZONE], [SIGN.PED_ZONE_END]);
           break;
         }
       }
@@ -1816,7 +1928,9 @@ class StreetScene {
       this.add('rack', x, y, z, yaw);
       if (this.rng() < 0.6) {
         const sd = this.rng() < 0.5 ? 1 : -1;
-        this.add('bike', x + p.dx * 0.3 * sd, y, z + p.dz * 0.3 * sd, yaw + (this.rng() - 0.5) * 0.08, { col: BIKE_COLS[Math.floor(this.rng() * BIKE_COLS.length)] });
+        this.add('bike', x + p.dx * 0.3 * sd, y, z + p.dz * 0.3 * sd, yaw + (this.rng() - 0.5) * 0.08, {
+          col: BIKE_COLS[Math.floor(this.rng() * BIKE_COLS.length)],
+        });
       }
     }
     const [x0, y0, z0] = placed[0],
@@ -1864,7 +1978,15 @@ class StreetScene {
     adMat.emissive.set(0xffffff);
     adMat.emissiveIntensity = 0.05;
     adMat.name = 'furniture_posters';
-    const glassMat = new THREE.MeshStandardMaterial({ color: 0xd5e6ec, transparent: true, opacity: 0.22, roughness: 0.05, metalness: 0.2, side: THREE.DoubleSide, depthWrite: false });
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0xd5e6ec,
+      transparent: true,
+      opacity: 0.22,
+      roughness: 0.05,
+      metalness: 0.2,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
     glassMat.name = 'furniture_glass';
 
     const groups = new Map();
@@ -2003,7 +2125,16 @@ class StreetScene {
                 hwid = R * Math.sin(step / 2);
               const [u0, v0, u1, v1] = uvOf((a.cell + Math.floor(k / 8)) % POSTERS.length);
               const j = k % 8;
-              qb.quad([a.x + sa * Rc, a.y + 1.44, a.z + ca * Rc], [ca * hwid, 0, -sa * hwid], [0, 1.1, 0], [sa, 0, ca], u0 + ((u1 - u0) * j) / 8, v0, u0 + ((u1 - u0) * (j + 1)) / 8, v1);
+              qb.quad(
+                [a.x + sa * Rc, a.y + 1.44, a.z + ca * Rc],
+                [ca * hwid, 0, -sa * hwid],
+                [0, 1.1, 0],
+                [sa, 0, ca],
+                u0 + ((u1 - u0) * j) / 8,
+                v0,
+                u0 + ((u1 - u0) * (j + 1)) / 8,
+                v1,
+              );
             }
           }
         }

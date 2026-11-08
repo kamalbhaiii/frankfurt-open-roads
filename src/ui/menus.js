@@ -9,7 +9,8 @@ import { input } from '../core/input.js';
 import { settings, ACTION_LABELS, keyName } from '../core/settings.js';
 import { formatMoney } from '../core/math.js';
 import { STAT_LABELS } from '../gameplay/stats.js';
-import { STORY, RACES, JOBS } from '../gameplay/missionData.js';
+import { RACES } from '../gameplay/missionData.js';
+import { JOBS } from '../gameplay/jobs.js';
 import { POSTCARD_COUNT } from '../gameplay/services.js';
 import { TIME_MODES } from '../world/environment.js';
 
@@ -54,7 +55,7 @@ export class Menus {
         <h1>FRANKFURT<span>OPEN ROADS</span></h1>
         <nav class="menu-list" role="menu">
           <button class="menu-item" data-a="continue" ${latest ? '' : 'disabled'}>Continue${latest ? `<small>${esc(latest.data.label)} · ${new Date(latest.data.savedAt).toLocaleString()}</small>` : '<small>No saved game yet</small>'}</button>
-          <button class="menu-item" data-a="new">New game<small>Start your first day at Kurier Hartmann</small></button>
+          <button class="menu-item" data-a="new">New game<small>Free roam in Frankfurt · jobs, races and more</small></button>
           <button class="menu-item" data-a="load">Load game</button>
           <button class="menu-item" data-a="settings">Settings</button>
           <button class="menu-item" data-a="controls">Controls</button>
@@ -161,25 +162,27 @@ export class Menus {
     const active = m.active;
     let html = '<div class="brief-list">';
     if (active) html += `<div class="brief-card"><h3>Now: ${esc(active.def.title)}</h3><p>${esc(m.objective || 'In progress')}</p></div>`;
-    html += '<div class="section-title">Story · Kurier Hartmann</div>';
-    STORY.forEach((s, i) => {
-      const state = i < prog.story ? 'done' : i === prog.story ? '' : 'locked';
-      const text =
-        state === 'done'
-          ? `Passed · ${formatMoney(s.reward)}`
-          : state === ''
-            ? `Next job. Meet ${s.contact} at the yellow L on the map (Römerberg).`
-            : 'Locked';
-      html += `<div class="brief-card ${state}"><h3>${i + 1}. ${esc(s.title)}</h3><p>${text}</p></div>`;
-    });
     html += '<div class="section-title">Street races</div>';
     for (const r of RACES) {
       const best = prog.races[r.id];
       html += `<div class="brief-card ${best ? 'done' : ''}"><h3>${esc(r.title)}</h3><p>Drive into the white flag marker in any vehicle. Gold ${r.medals[0]} s · Silver ${r.medals[1]} s · Bronze ${r.medals[2]} s${best ? ` · Best ${best.toFixed(1)} s` : ''}</p></div>`;
     }
     html += '<div class="section-title">Jobs</div>';
-    for (const j of JOBS)
-      html += `<div class="brief-card"><h3>${esc(j.title)}</h3><p>Get into a ${j.vehicle === 'taxi' ? 'taxi' : 'delivery van'} and press <b>${keyName(settings.get('bindings').job[0])}</b>. Completed so far: ${prog.jobsDone}.</p></div>`;
+    const how = {
+      taxi: 'Get into a taxi (taxi rank T on the map) and press',
+      courier: 'Get into a courier van (depot C) and press',
+      bus: 'Get into a city bus at the bus depot (B) and press',
+      tow: 'Get into a tow truck at a tow service (A) and press',
+      ambulance: 'Get into an ambulance at a hospital (+) and press',
+      uber: 'Open the phone and go online in the Uber app (any car).',
+      eats: 'Open the phone, Uber app, Eats tab (any vehicle; delivery scooters at restaurants).',
+    };
+    const jobKey = keyName(settings.get('bindings').job[0]);
+    for (const j of JOBS) {
+      const st = prog.jobs?.[j.id];
+      const text = how[j.id].endsWith('press') ? `${how[j.id]} <b>${jobKey}</b>.` : how[j.id];
+      html += `<div class="brief-card ${st?.done ? 'done' : ''}"><h3>${esc(j.title)}</h3><p>${text}${st ? ` Completed: ${st.done} · earned ${formatMoney(st.earned)}` : ''}</p></div>`;
+    }
     html += `<div class="section-title">Collectibles</div><div class="brief-card"><h3>Postcards ${ctx.services.found.size}/${POSTCARD_COUNT}</h3><p>Hidden next to the skyline's towers. €100 each, €2.500 for the full set.</p></div>`;
     html += `</div><div class="section-title" style="margin-top:22px">Recent messages</div><div class="log">${this.log.map(esc).join('<br>') || '—'}</div>`;
     page.innerHTML = html;
@@ -336,6 +339,7 @@ export class Menus {
           ['D-pad ←', 'Start / stop job'],
           ['D-pad ↓', 'Flip vehicle'],
           ['View', 'Map'],
+          ['RB', 'Phone'],
           ['Menu', 'Pause'],
         ]
           .map(([k, v]) => `<div class="stat"><span>${v}</span><b>${k}</b></div>`)
@@ -370,7 +374,7 @@ export class Menus {
         Live weather: Deutscher Wetterdienst via Bright Sky, with Open-Meteo as fallback.<br>
         Sun and moon positions: SunCalc. Rendering: three.js. Physics: Rapier.<br>
         All 3D models, music and sound effects are generated procedurally by the game's own code.<br><br>
-        Kurier Hartmann, its staff and all story events are fictional.
+        Restaurants, companies and people in the game are fictional.
       </p>`;
   }
 

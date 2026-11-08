@@ -258,13 +258,20 @@ export class Environment {
       sun.intensity = smooth(-0.1, 0.3, mdir.y) * 0.22 * (1 - w.cloud * 0.85);
       sun.color.setRGB(0.62, 0.72, 1.0);
     }
-    sun.castShadow = QUALITY[ctx.quality].shadows && sun.intensity > 0.08;
+    // never toggle castShadow at runtime: it changes every shader and forces a full recompile
+    // (multi-second freeze on integrated GPUs). Weak sun: just stop refreshing the shadow map.
+    sun.castShadow = QUALITY[ctx.quality].shadows;
+    sun.shadow.autoUpdate = sun.intensity > 0.08;
+    if (sun.shadow.autoUpdate === false && !this.shadowCleared) {
+      sun.shadow.needsUpdate = true;
+      this.shadowCleared = true;
+    } else if (sun.shadow.autoUpdate) this.shadowCleared = false;
 
     // sky light: hemisphere tinted by the sky model, greyer under cloud
     const hemi = this.hemi;
     const zl = Math.max(atmo.zenith.r, atmo.zenith.g, atmo.zenith.b, 1e-4);
     hemi.color.setRGB(atmo.zenith.r / zl, atmo.zenith.g / zl, atmo.zenith.b / zl).lerp(new THREE.Color(0.86, 0.9, 1), 0.45 + overcast * 0.4);
-    hemi.intensity = lerp(0.05, 0.55, day) * (1 - overcast * 0.2) + night * 0.04;
+    hemi.intensity = lerp(0.05, 0.55, day) * (1 - overcast * 0.2) + night * 0.09;
     hemi.groundColor.setRGB(lerp(0.04, 0.33, day), lerp(0.04, 0.3, day), lerp(0.05, 0.27, day));
 
     // lightning

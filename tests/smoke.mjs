@@ -126,45 +126,82 @@ try {
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => window.__game.ctx.game.state === 'playing', { timeout: 30000 });
   });
-  await step('start story mission', async () => {
-    await page.evaluate(() => {
-      const { ctx } = window.__game;
-      if (ctx.player.vehicle) ctx.player.exitVehicle(true);
-      const m = ctx.missions.giverMarkers[0];
-      ctx.player.teleport(m.x, m.z);
+  await step('phone + Uber ride', async () => {
+    const res = await page.evaluate(() => {
+      const g = window.__game, c = g.ctx;
+      if (c.player.vehicle) c.player.exitVehicle(true);
+      // get into a normal car near the spawn
+      // a fresh car: the coupé from earlier steps may have been rammed by the police
+      const p0 = c.player.position;
+      const spot = c.roads.nearest(p0.x, p0.z, 200);
+      const car = c.vehicles.spawn('sedan', spot.x, spot.z, 0, 'parked', { driver: false });
+      g.advance(0.5);
+      const q = car.body.translation();
+      c.player.teleport(q.x + 2.6, q.z);
+      c.player.enterVehicle(car);
+      g.advance(1);
+      c.phone.toggle();
+      c.phone.go('uber');
+      c.phone.data.uber.online = true;
+      c.phone.reqTimer = 0;
+      g.advance(0.5);
+      const hadRequest = !!c.phone.request;
+      c.phone.acceptRequest();
+      const job = c.missions.active?.def.id;
+      // drive the passenger by teleporting the car onto each target
+      for (let i = 0; i < 6 && c.missions.active; i++) {
+        const s = c.missions.step;
+        if (s?.type === 'goto' && s.state.at) {
+          const v = c.player.vehicle;
+          v.body.setTranslation({ x: s.state.at.x, y: 1.2, z: s.state.at.z }, true);
+          v.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        }
+        g.advance(1.5);
+      }
+      return { hadRequest, job, done: c.phone.data.uber.rides, money: c.player.money, open: c.phone.open };
     });
-    await page.evaluate(() => window.__game.advance(1));
-    const active = await page.evaluate(() => window.__game.ctx.missions.active?.def.title || null);
-    console.log(`  active mission: ${active}`);
-    if (!active) throw new Error('mission did not start');
+    console.log(`  Uber: request ${res.hadRequest}, job ${res.job}, rides ${res.done}, money €${res.money}`);
+    if (!res.hadRequest || res.job !== 'uber' || res.done < 1) throw new Error('Uber ride did not complete');
   });
-  await shot('06-mission');
-  await step('complete story mission 1', async () => {
-    // wait for the van to spawn after the dialogue
-    await page.evaluate(() => window.__game.advance(9));
-    await page.waitForFunction(() => !!window.__game.ctx.missions.active?.refs.van, { timeout: 30000 });
-    await page.evaluate(() => {
-      const { ctx } = window.__game;
-      const van = ctx.missions.active.refs.van;
-      const p = van.body.translation();
-      ctx.player.teleport(p.x + 2.6, p.z);
-      ctx.player.enterVehicle(van);
+  await step('phone apps render', async () => {
+    for (const app of ['home', 'instagram', 'whatsapp', 'maps', 'bank', 'settings', 'uber']) {
+      await page.evaluate((a) => {
+        const c = window.__game.ctx;
+        if (!c.phone.open) c.phone.toggle();
+        c.phone.go(a);
+      }, app);
+      await shot(`06-phone-${app}`);
+    }
+    await page.evaluate(() => window.__game.ctx.phone.setOpen(false));
+  });
+  await step('bus job from depot', async () => {
+    const res = await page.evaluate(() => {
+      const g = window.__game, c = g.ctx;
+      if (c.player.vehicle) c.player.exitVehicle(true);
+      const d = c.depots.nearest('bus');
+      const bus = d.car;
+      const q = bus.body.translation();
+      c.player.teleport(q.x + 3, q.z);
+      c.player.enterVehicle(bus);
+      g.advance(1);
+      c.missions.toggleJob();
+      const job = c.missions.active?.def.id;
+      const money0 = c.player.money;
+      for (let i = 0; i < 8; i++) {
+        const s = c.missions.step;
+        if (s?.type === 'goto' && s.state.at) {
+          const v = c.player.vehicle;
+          v.body.setTranslation({ x: s.state.at.x, y: 1.6, z: s.state.at.z }, true);
+          v.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        }
+        g.advance(2.5);
+      }
+      const paid = c.player.money - money0;
+      c.missions.toggleJob();
+      return { job, paid, active: !!c.missions.active };
     });
-    await page.evaluate(() => window.__game.advance(0.5));
-    await page.waitForFunction(() => window.__game.ctx.missions.step?.type === 'deliver', { timeout: 30000 });
-    await page.evaluate(() => window.__game.advance(0.5));
-    await page.evaluate(() => {
-      const { ctx } = window.__game;
-      const at = ctx.missions.step.state.at;
-      const van = ctx.player.vehicle;
-      van.body.setTranslation({ x: at.x, y: 1.2, z: at.z }, true);
-      van.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    });
-    await page.evaluate(() => window.__game.advance(4));
-    await page.waitForFunction(() => window.__game.ctx.missions.progress.story === 1, { timeout: 30000 });
-    await shot('06b-mission-passed');
-    const money = await page.evaluate(() => window.__game.ctx.player.money);
-    console.log(`  money after mission: €${money}`);
+    console.log(`  bus job: ${res.job}, earned €${res.paid}`);
+    if (res.job !== 'bus' || res.paid <= 0 || res.active) throw new Error('bus job failed');
   });
   await step('save + reload data', async () => {
     const ok = await page.evaluate(() => {
