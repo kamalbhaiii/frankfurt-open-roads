@@ -77,12 +77,17 @@ try {
     // software rendering is slow, so step the game logic directly (advance() skips rendering)
     const kmh = await page.evaluate(() => {
       const g = window.__game;
+      // peak speed: the road ahead of the spawn isn't guaranteed to stay clear for 3 s
       g.input.hold('forward', true);
-      g.advance(3);
+      let peak = 0;
+      for (let i = 0; i < 12; i++) {
+        g.advance(0.25);
+        peak = Math.max(peak, Math.abs(g.ctx.player.vehicle?.kmh || 0));
+      }
       g.input.hold('forward', false);
-      return Math.abs(g.ctx.player.vehicle?.kmh || 0);
+      return peak;
     });
-    console.log(`  speed after 3 s (simulated) of throttle: ${kmh.toFixed(0)} km/h`);
+    console.log(`  peak speed within 3 s (simulated) of throttle: ${kmh.toFixed(0)} km/h`);
     if (kmh < 10) throw new Error('vehicle did not accelerate');
   });
   await shot('03-driving');
@@ -101,7 +106,8 @@ try {
     await waitSim(12);
     const b = await nearest();
     console.log(`  units ${a.units} → ${b.units}, nearest ${a.nearest?.toFixed(0)} m → ${b.nearest?.toFixed(0)} m`);
-    if (!b.units) throw new Error('no police units spawned');
+    // units may already have gone home if the heat was lost (correct behaviour)
+    if (!a.units && !b.units) throw new Error('no police units spawned');
   });
   await shot('04-police');
   await step('waypoint + GPS route', async () => {
@@ -115,7 +121,12 @@ try {
     if (!ok) throw new Error('no GPS route');
   });
   await step('pause menu tabs', async () => {
-    await page.evaluate(() => window.__game.ctx.wanted.clear());
+    // the chase may have ended in an arrest: let that sequence finish first
+    await page.evaluate(() => {
+      window.__game.ctx.wanted.clear();
+      window.__game.ctx.police.reset();
+    });
+    await page.waitForFunction(() => window.__game.ctx.game.state === 'playing', { timeout: 60000 });
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => window.__game.ctx.game.state === 'paused', { timeout: 30000 });
     for (const t of ['map', 'brief', 'stats', 'settings', 'controls', 'game']) {
@@ -197,10 +208,11 @@ try {
         g.advance(2.5);
       }
       const paid = c.player.money - money0;
-      c.missions.toggleJob();
+      // stop the shift (it may already have ended if the teleported bus hit a parked car)
+      if (c.missions.active?.def.id === 'bus') c.missions.toggleJob();
       return { job, paid, active: !!c.missions.active };
     });
-    console.log(`  bus job: ${res.job}, earned €${res.paid}`);
+    console.log(`  bus job: ${res.job}, earned €${res.paid}, still active: ${res.active}`);
     if (res.job !== 'bus' || res.paid <= 0 || res.active) throw new Error('bus job failed');
   });
   await step('save + reload data', async () => {
@@ -221,7 +233,7 @@ try {
   const fps = await page.evaluate(() => window.__game.ctx.fps);
   console.log(`fps (software rendering): ${fps?.toFixed(1)}`);
 } catch (e) {
-  errors.push(`test: ${e.message}`);
+  errors.push(`test: ${e.message}${e.cause ? ` (cause: ${e.cause.message || e.cause})` : ''}`);
   await shot('error').catch(() => {});
 }
 await browser.close();

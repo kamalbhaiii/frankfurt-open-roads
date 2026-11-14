@@ -5,10 +5,11 @@
  * assets/models/car_<kind>.glb and loaded into ctx.models['car_<kind>'] (src/world/data.js).
  * All kinds follow the same car contract (wheel_FL/FR/RL/RR hub pivots, body_vc, glass, headlight,
  * taillight, indicator_L/R, optional siren/taxi_sign, plate; userData with seatX/seatY/seatZ, mass, power),
- * so every one of them is a full, drivable Vehicle.
+ * so every one of them is a full Vehicle. All are player-drivable except the tram (drivable: false; it is driven
+ * kinematically along the tram rails by src/actors/transit.js).
  *
  *   label      display name (German)
- *   category   'car' | 'bus' | 'emergency' | 'truck' | 'scooter'
+ *   category   'car' | 'bus' | 'emergency' | 'truck' | 'scooter' | 'tram' | 'bike'
  *   length, width   metres (bounding box of the model)
  *   mass       kg (physics; read from the model's userData at runtime)
  *   siren      true when the model has a 'siren' light bar (Vehicle.siren toggles it)
@@ -29,6 +30,9 @@ export const VEHICLE_TYPES = {
   bus: { label: 'Stadtbus', category: 'bus', length: 12.0, width: 2.55, mass: 12000, livery: 'fixed' },
   ambulance: { label: 'Rettungswagen', category: 'emergency', length: 6.9, width: 2.25, mass: 4000, livery: 'fixed', siren: true },
   tow: { label: 'Abschleppwagen', category: 'truck', length: 7.6, width: 2.3, mass: 7000, livery: 'fixed', siren: true },
+  tram: { label: 'Straßenbahn', category: 'tram', length: 30, width: 2.4, mass: 38000, livery: 'fixed', drivable: false },
+  bicycle: { label: 'Fahrrad', category: 'bike', length: 1.8, width: 0.6, mass: 95, livery: 'paint' },
+  refuse: { label: 'Müllwagen', category: 'truck', length: 9.6, width: 2.5, mass: 12000, livery: 'fixed', siren: true },
   scooter: { label: 'Lieferroller', category: 'scooter', length: 1.85, width: 0.72, mass: 200, livery: 'paint' },
 };
 

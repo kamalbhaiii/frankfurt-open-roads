@@ -6,6 +6,7 @@
 import { RC, roadWidth } from '../core/config.js';
 import { bounds } from '../core/math.js';
 import { BLIP_STYLES } from '../gameplay/markers.js';
+import { stationFootprint, fromUV, HBF } from '../world/station/zones.js';
 
 export const MAP_BOUNDS = { minx: -2100, maxx: 2300, minz: -1750, maxz: 1500 };
 const TILE = 300;
@@ -55,7 +56,12 @@ export class MapRenderer {
     };
     for (const r of city.water) addRing('water', r);
     for (const r of city.parks) addRing('parks', r);
-    for (const b of city.buildings) if (b.pts.length > 2) addRing(b.h > 60 ? 'tall' : 'buildings', b.pts);
+    // the Hauptbahnhof replaces its OSM footprints: draw the real station outline instead
+    for (const b of city.buildings) if (b.pts.length > 2 && !stationFootprint(b.pts)) addRing(b.h > 60 ? 'tall' : 'buildings', b.pts);
+    const uv = (pts) => pts.map(([u, v]) => fromUV(u, v));
+    addRing('tall', uv([[HBF.hallW, HBF.vN], [HBF.front, HBF.vN], [HBF.front, HBF.vS], [HBF.hallW, HBF.vS]]));
+    const t = HBF.terminal;
+    addRing('path', uv([[t.u0, t.v0], [t.u1, t.v0], [t.u1, t.v1], [t.u0, t.v1]]));
     for (const r of city.rails) addLine('rails', r.pts);
     this.majorW = 12;
     for (const r of city.roads) {

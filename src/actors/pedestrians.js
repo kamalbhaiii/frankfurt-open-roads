@@ -59,14 +59,7 @@ const ZONES = [
   },
   {
     id: 'residential',
-    names: [
-      'Oeder Weg',
-      'Berger Straße',
-      'Grüneburgweg',
-      'Schweizer Straße',
-      'Ostendstraße',
-      'Arndtstraße',
-    ],
+    names: ['Oeder Weg', 'Berger Straße', 'Grüneburgweg', 'Schweizer Straße', 'Ostendstraße', 'Arndtstraße'],
     cls: null,
     r: 300,
     // Nordend, Westend, Sachsenhausen and Ostend; weighted to residential density.
@@ -667,6 +660,11 @@ export class Pedestrians {
       p.lodDt = 0;
       const sp = this.move(p, sdt);
       if (p.removed) continue;
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.z) || !Number.isFinite(p.yaw)) {
+        this.nan = { mode: p.mode, lat: p.lat, t: p.t, i: p.i, leader: !!p.leader, cross: p.cross?.phase };
+        this.remove(p);
+        continue;
+      }
       if (far) continue;
       p.ry -= sdt;
       if (p.ry <= 0) {
@@ -676,7 +674,7 @@ export class Pedestrians {
       p.y = lerp(p.y, p.yT, clamp(sdt * 10, 0, 1));
       p.ch.root.position.set(p.x, p.y, p.z);
       p.ch.root.rotation.y = p.yaw;
-      if (sp > 2.5) playAny(p.ch, p.style === 'jogger' && sp < 3.6 ? ['jog', 'run'] : ['run'], 0.2, p.style === 'jogger' ? sp / 4 : sp / 6);
+      if (sp > 2.5) playAny(p.ch, p.style === 'jogger' && sp < 3.6 ? ['jog', 'run'] : ['run'], 0.2, p.style === 'jogger' ? sp / 3 : sp / 6);
       else if (sp > 0.2) p.ch.play('walk', 0.25, sp / 1.45);
       else if (p.mode === 'idle' && p.clip) playAny(p.ch, p.clip, 0.4);
       else playAny(p.ch, p.waitClip || ['idle'], 0.3);
@@ -809,10 +807,13 @@ export class Pedestrians {
   /** A gentle shoulder check and sidestep keeps walkers from marching through one another. */
   avoidCrowd(p, dt) {
     let push = 0;
-    const rightX = -Math.cos(p.yaw), rightZ = Math.sin(p.yaw);
+    const rightX = -Math.cos(p.yaw),
+      rightZ = Math.sin(p.yaw);
     for (const q of this.grid.query(p.x, p.z, 1.35)) {
       if (q === p || q.leader === p || p.leader === q || q.down > 0) continue;
-      const dx = p.x - q.x, dz = p.z - q.z, d2 = dx * dx + dz * dz;
+      const dx = p.x - q.x,
+        dz = p.z - q.z,
+        d2 = dx * dx + dz * dz;
       if (d2 < 0.01 || d2 > 1.82) continue;
       const f = (1.35 - Math.sqrt(d2)) / 1.35;
       const side = dx * rightX + dz * rightZ;

@@ -15,7 +15,7 @@ import { randomPerson } from './characters.js';
 import { VEHICLE_TYPES } from './vehicleTypes.js';
 
 /** Kinds whose livery is fixed (never resprayed). */
-const FIXED_LIVERY = new Set(['taxi', 'police', 'van', 'bus', 'ambulance', 'tow']);
+const FIXED_LIVERY = new Set(['taxi', 'police', 'van', 'bus', 'ambulance', 'tow', 'tram', 'refuse']);
 
 /**
  * Vehicle body materials. Vertex colour alpha holds a material class (cls / 15, see tools/models/cars.mjs CLS):

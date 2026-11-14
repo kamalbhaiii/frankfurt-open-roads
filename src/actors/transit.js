@@ -13,6 +13,7 @@ import { ctx } from '../core/context.js';
 import { rnd, clamp, lerp, wrapAngle, damp, hash, segDist, SpatialGrid } from '../core/math.js';
 import { RoadNetwork } from '../world/roadNetwork.js';
 import { firstKind, spawnVehicle } from './traffic.js';
+import { inStationArea } from '../world/station/zones.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _q = new THREE.Quaternion();
@@ -27,8 +28,33 @@ const _a = {},
 // Central sections of current RMV Metrobus lines. Stops are snapped to the
 // street graph, then the road graph fills in the drivable path between them.
 const BUS_CORRIDORS = [
-  { line: 'M36', streets: ['Bornwiesenweg', 'Eschersheimer Landstraße', 'Alte Gasse', 'Konstablerwache', 'Börneplatz', 'Schöne Aussicht', 'Elisabethenstraße', 'Affentorplatz', 'Lokalbahnhof', 'Darmstädter Landstraße'] },
-  { line: 'M32', streets: ['Hanauer Landstraße', 'Ostendstraße', 'Zeil', 'Große Eschenheimer Straße', 'Eschersheimer Landstraße', 'Bockenheimer Landstraße', 'Westendstraße'] },
+  {
+    line: 'M36',
+    streets: [
+      'Bornwiesenweg',
+      'Eschersheimer Landstraße',
+      'Alte Gasse',
+      'Konstablerwache',
+      'Börneplatz',
+      'Schöne Aussicht',
+      'Elisabethenstraße',
+      'Affentorplatz',
+      'Lokalbahnhof',
+      'Darmstädter Landstraße',
+    ],
+  },
+  {
+    line: 'M32',
+    streets: [
+      'Hanauer Landstraße',
+      'Ostendstraße',
+      'Zeil',
+      'Große Eschenheimer Straße',
+      'Eschersheimer Landstraße',
+      'Bockenheimer Landstraße',
+      'Westendstraße',
+    ],
+  },
   { line: 'M34', streets: ['Mainzer Landstraße', 'Kaiserstraße', 'Taunusstraße', 'Zeil', 'Berger Straße'] },
   { line: 'M46', streets: ['Europa-Allee', 'Friedrich-Ebert-Anlage', 'Platz der Republik', 'Am Hauptbahnhof'] },
 ];
@@ -119,17 +145,23 @@ export class Transit {
         const candidates = roads.edges.filter((e) => e.name === name && e.len > 8);
         if (!candidates.length) continue;
         candidates.sort((a, b) => {
-          const pa = RoadNetwork.pose(a, 1, a.len / 2), pb = RoadNetwork.pose(b, 1, b.len / 2);
+          const pa = RoadNetwork.pose(a, 1, a.len / 2),
+            pb = RoadNetwork.pose(b, 1, b.len / 2);
           return previous ? Math.hypot(pa.x - previous.x, pa.z - previous.z) - Math.hypot(pb.x - previous.x, pb.z - previous.z) : b.len - a.len;
         });
-        const e = candidates[0], mid = RoadNetwork.pose(e, 1, e.len / 2);
+        const e = candidates[0],
+          mid = RoadNetwork.pose(e, 1, e.len / 2);
         const ends = [RoadNetwork.pose(e, 1, 0), RoadNetwork.pose(e, 1, e.len)];
-        const node = previous && Math.hypot(ends[0].x - previous.x, ends[0].z - previous.z) > Math.hypot(ends[1].x - previous.x, ends[1].z - previous.z) ? ends[1] : ends[0];
+        const node =
+          previous && Math.hypot(ends[0].x - previous.x, ends[0].z - previous.z) > Math.hypot(ends[1].x - previous.x, ends[1].z - previous.z)
+            ? ends[1]
+            : ends[0];
         if (!previous || Math.hypot(node.x - previous.x, node.z - previous.z) > 20) anchors.push({ name, point: [node.x, node.z], stopPoint: [mid.x, mid.z] });
         previous = node;
       }
       if (anchors.length < 3) continue;
-      const steps = [], stops = [];
+      const steps = [],
+        stops = [];
       const appendLeg = (from, to) => {
         const route = roads.route(from[0], from[1], to[0], to[1], true);
         if (!route?.edges) return false;
@@ -138,7 +170,8 @@ export class Transit {
       };
       let connected = true;
       for (let i = 0; i < anchors.length - 1; i++) {
-        const start = anchors[i].point, end = anchors[i + 1].point;
+        const start = anchors[i].point,
+          end = anchors[i + 1].point;
         connected = appendLeg(start, end) && connected;
       }
       // Return along a legal route to make a continuous service loop.
@@ -148,7 +181,8 @@ export class Transit {
         const anchor = anchors[i];
         const options = steps.filter((s) => s.edge.name === anchor.name);
         options.sort((a, b) => {
-          const pa = RoadNetwork.pose(a.edge, a.dir, a.edge.len / 2), pb = RoadNetwork.pose(b.edge, b.dir, b.edge.len / 2);
+          const pa = RoadNetwork.pose(a.edge, a.dir, a.edge.len / 2),
+            pb = RoadNetwork.pose(b.edge, b.dir, b.edge.len / 2);
           return Math.hypot(pa.x - anchor.stopPoint[0], pa.z - anchor.stopPoint[1]) - Math.hypot(pb.x - anchor.stopPoint[0], pb.z - anchor.stopPoint[1]);
         });
         const step = options[0];
@@ -163,20 +197,24 @@ export class Transit {
   }
 
   buildBusStops() {
-    for (const route of this.busRoutes) for (const spec of route.stops) {
-      const e = spec.edge, dir = spec.dir, sT = spec.s;
-      if (!e.busStops) e.busStops = [];
-      const kerb = e.width / 2;
-      const pl = RoadNetwork.pose(e, dir, sT, kerb + 1.4);
-      const stop = { edge: e, dir, s: sT, sFwd: sT, x: pl.x, z: pl.z, name: spec.name, line: route.line, kind: 'bus', waiting: 0, platforms: [] };
-      for (const off of [-4, 0, 4]) {
-        const at = sT + off;
-        const q = RoadNetwork.pose(e, dir, clamp(at, 0, e.len), kerb + 1.4);
-        stop.platforms.push({ x: q.x, z: q.z, yaw: wrapAngle(q.yaw - Math.PI / 2) });
+    for (const route of this.busRoutes)
+      for (const spec of route.stops) {
+        const e = spec.edge,
+          dir = spec.dir,
+          sT = spec.s;
+        if (!e.busStops) e.busStops = [];
+        const kerb = e.width / 2;
+        const pl = RoadNetwork.pose(e, dir, sT, kerb + 1.4);
+        if (inStationArea(pl.x, pl.z)) continue; // keep the Hauptbahnhof / Fernbusterminal clear
+        const stop = { edge: e, dir, s: sT, sFwd: sT, x: pl.x, z: pl.z, name: spec.name, line: route.line, kind: 'bus', waiting: 0, platforms: [] };
+        for (const off of [-4, 0, 4]) {
+          const at = sT + off;
+          const q = RoadNetwork.pose(e, dir, clamp(at, 0, e.len), kerb + 1.4);
+          stop.platforms.push({ x: q.x, z: q.z, yaw: wrapAngle(q.yaw - Math.PI / 2) });
+        }
+        e.busStops.push({ s: sT, stop });
+        this.busStops.push(stop);
       }
-      e.busStops.push({ s: sT, stop });
-      this.busStops.push(stop);
-    }
   }
 
   nextBusMove(ai, nodeId, traffic) {
@@ -375,6 +413,14 @@ export class Transit {
     const yaw = Math.atan2(fr.x - rr.x, fr.z - rr.z);
     car.yaw += wrapAngle(yaw - car.yaw) * damp(12, dt);
     const p = car.body.translation();
+    if (!Number.isFinite(c.x + c.z + car.yaw)) {
+      this.nan = { edge: r.edge.id, s: r.s, speed: car.speed };
+      r.stuck = 99;
+      r.end = true;
+      car.speed = 0;
+      car.yaw = 0;
+      return;
+    }
     car.body.setNextKinematicTranslation({ x: lerp(p.x, c.x, damp(16, dt)), y: car.H0 + 0.035, z: lerp(p.z, c.z, damp(16, dt)) });
     _q.setFromAxisAngle(UP, car.yaw);
     car.body.setNextKinematicRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w });

@@ -374,7 +374,7 @@ const LIGHT_MATS = {
 // ------------------------------------------------------------------------------------------------
 // WHEELS (one vertex-coloured mesh per wheel; axle along X)
 function wheelGeo(s, lod = 0) {
-  const r = s.r, w = s.tyreW, ri = r * (s.rimRatio ?? 0.68), ox = w / 2, seg = lod ? 12 : 32;
+  const r = s.r, w = s.tyreW, ri = r * (s.rimRatio ?? 0.68), ox = w / 2, seg = lod ? 12 : (s.wheelSeg ?? 32);
   const C = { tyre: col(0x161616, CLS.rubber), rim: col(s.rim ?? 0xb9bec4, s.rimCls ?? CLS.metal), dark: col(0x26292d, CLS.matte), disc: col(0x6d6f72, CLS.metal), cap: col(0x1b1d20, CLS.gloss), nut: col(0xa0a6ac, CLS.chrome) };
   const parts = [];
   const add = (g, c) => parts.push(paintGeo(prep(g), c));
@@ -382,6 +382,12 @@ function wheelGeo(s, lod = 0) {
   const prof = [[ri - 0.005, -w * 0.42], [ri + 0.02, -w * 0.5], [r - 0.05, -w * 0.5], [r - 0.018, -w * 0.46], [r - 0.004, -w * 0.38], [r, -w * 0.28], [r, w * 0.28], [r - 0.004, w * 0.38], [r - 0.018, w * 0.46], [r - 0.05, w * 0.5], [ri + 0.02, w * 0.5], [ri - 0.005, w * 0.42]];
   const tyre = new THREE.LatheGeometry(prof.map(([a, b]) => new THREE.Vector2(a, b)), seg); tyre.deleteAttribute('uv'); tyre.rotateZ(Math.PI / 2); add(tyre, C.tyre);
   if (lod) { add(ax(cyl(ri, ri, w * 0.9, 0, 0, 0, seg)), C.rim); return mergeGeometries(parts); }
+  if (s.rimStyle === 'bike') { // thin rim, 16 wire spokes, small hub
+    const rim = new THREE.TorusGeometry(ri, 0.012, 4, seg); rim.deleteAttribute('uv'); rim.rotateY(Math.PI / 2); add(rim, C.rim);
+    add(ax(cyl(0.025, 0.025, 0.08, 0, 0, 0, 8)), C.nut);
+    for (let i = 0; i < 16; i++) { const a = (i / 16) * Math.PI * 2, g = new THREE.BoxGeometry(0.003, ri - 0.02, 0.003); g.deleteAttribute('uv'); g.translate(i % 2 ? 0.02 : -0.02, (ri - 0.02) / 2 + 0.02, 0); g.rotateX(a); add(g, C.rim); }
+    return mergeGeometries(parts);
+  }
   add(flipG(prep(ax(cyl(ri, ri, w * 0.84, 0, 0, 0, 28, 0, 0, true)))), C.dark);
   add(ax(cyl(ri * 0.98, ri * 0.98, 0.012, 0, 0, 0, 28)).translate(-w * 0.18, 0, 0), C.dark);
   add(ax(cyl(r * 0.5, r * 0.5, 0.025, 0, 0, 0, 24)).translate(-w * 0.05, 0, 0), C.disc);
@@ -477,13 +483,13 @@ function build(s) {
   for (const [m, gs] of Object.entries(lightGeos)) { const mat = LIGHT_MATS[m](); if (m === 'siren' && s.ud?.sirenColors) { mat.color.setHex(s.ud.sirenColors[0]); mat.emissive.setHex(s.ud.sirenColors[0]); } const mesh = new THREE.Mesh(mergeGeometries(gs), mat); mesh.name = m; lod0.add(mesh); }
   if (plateGeos.length) { const pm = new THREE.Mesh(mergeGeometries(plateGeos), std('plate', 0xf2f2ee, { roughness: 0.35 })); pm.name = 'plate'; lod0.add(pm); }
   if (decalGeos.length) { const dm = new THREE.Mesh(mergeGeometries(decalGeos), std('decal', 0xffffff, { roughness: 0.4, transparent: true, alphaTest: 0.5 })); dm.name = 'decal'; lod0.add(dm); }
-  const wGeo = wheelGeo(s);
+  const wGeo = wheelGeo(s), hubStub = paintGeo(prep(T(new THREE.CylinderGeometry(0.02, 0.02, 0.06, 6), 0, 0, 0, 0, 0, Math.PI / 2)), col(0x8a8f95, CLS.metal)); // paired twin of a visible wheel: only a hub stub
   const wMat = std('wheel_vc', 0xffffff, { vertexColors: true, roughness: 0.5, metalness: 0.3 });
   const wx = s.wheelX ?? s.W / 2 - s.tyreW / 2 - 0.04;
   const wheels = s.wheels ?? [['wheel_FL', wx, s.axles[0]], ['wheel_FR', -wx, s.axles[0]], ['wheel_RL', wx, s.axles[1]], ['wheel_RR', -wx, s.axles[1]], ...(s.extraWheels?.(wx) || [])];
   for (const [n, x, z] of wheels) {
     const wg = new THREE.Group(); wg.name = n; wg.position.set(x, s.r, z);
-    const wm = new THREE.Mesh(wGeo, wMat); wm.name = n + '_mesh'; if (x < 0) wm.rotation.y = Math.PI; wg.add(wm); car.add(wg);
+    const wm = new THREE.Mesh(wGeo, wMat); wm.name = n + '_mesh'; if (x < 0) wm.rotation.y = Math.PI; if (s.hiddenWheels?.includes(n)) { wm.geometry = hubStub; wm.rotation.y = 0; } wg.add(wm); car.add(wg);
   }
   car.add(lod0);
   car.userData = {
@@ -842,6 +848,143 @@ const SCOOTER = {
   },
 };
 
+// --- tram (Straßenbahn): rigid, visually 3 sections; driven kinematically by src/actors/transit.js -------------
+const TRAM_SEC = [[0.35, 1.1], [0.45, 1.18], [0.6, 1.2], [2.7, 1.2], [2.95, 1.12], [3.1, 0.95], [3.17, 0.6]];
+const TRAM_DOORS = [9.6, 3.0, -3.0, -9.6];
+function tramSection(z0, z1, nose) {
+  // nose: +1 rounded cab at z1, -1 rounded cab at z0, 0 none
+  const pts = [[z0, 0.35, 1]];
+  if (nose < 0) pts.push([z0 + 0.4, 0.35], [z0 + 0.05, 0.6], [z0, 1.0], [z0 + 0.05, 2.0], [z0 + 0.25, 2.9], [z0 + 0.6, 3.15, 1]);
+  else pts.push([z0, 3.15, 1]);
+  if (nose > 0) pts.push([z1 - 0.6, 3.15, 1], [z1 - 0.25, 2.9], [z1 - 0.05, 2.0], [z1, 1.0], [z1 - 0.05, 0.6], [z1 - 0.4, 0.35]);
+  else pts.push([z1, 3.15, 1]);
+  pts.push([z1, 0.35, 1], [z0, 0.35, 1]);
+  const head = poly2([[0.62, 0.58], [0.62, 0.74], [1.05, 0.76], [1.05, 0.58]], 0.02), dest = poly2([[0, 2.86], [0, 3.04], [0.85, 3.04], [0.85, 2.86]], 0.02);
+  return simpleBody({
+    def: { poly: pts, sec: TRAM_SEC, hw0: 1.2, cl: { fx: nose > 0 ? 0.4 : 0.03, fz: nose > 0 ? 0.6 : 0.03, rx: nose < 0 ? 0.4 : 0.03, rz: nose < 0 ? 0.6 : 0.03 }, ch: { fx: nose > 0 ? 0.4 : 0.03, fz: nose > 0 ? 0.6 : 0.03, rx: nose < 0 ? 0.4 : 0.03, rz: nose < 0 ? 0.6 : 0.03 }, bowF: 0.1, bowR: 0.1, k0: 0.04, k1: 0.06 },
+    b0: [-1.26, 0.3, z0 - 0.05], b1: [1.26, 3.22, z1 + 0.05], cell: 0.04,
+    regions: () => {
+      const end = (z, e) => (e > 0 ? z1 - 0.7 - z : z - (z0 + 0.7)); // < 0 on the cab end
+      const lamp = (part, e, extra = () => -1) => ({ part, g: (x, y, z) => (nose === e ? Math.max(head(Math.abs(x), y), end(z, e), extra(x, y)) : 1) });
+      const ws = (x, y, z, nx, ny, nz) => (nose ? Math.max(Math.abs(y - 1.95) - 0.8, Math.abs(x) - 0.98, end(z, nose), (0.35 - nz * nose) * 0.3) : 1);
+      const side = (x, y, z, nx) => { let g = Math.max(Math.abs(y - 1.95) - 0.68, z0 + (nose < 0 ? 1.4 : 0.25) - z, z - z1 + (nose > 0 ? 1.4 : 0.25), (0.5 - Math.abs(nx)) * 0.3); for (let k = Math.ceil(z0); k < z1; k += 1.4) g = smax(g, 0.05 - Math.abs(z - k), 0.02); return g; };
+      const door = (x, y, z, nx) => Math.min(...TRAM_DOORS.map((c) => Math.max(Math.abs(z - c) - 0.65, Math.abs(y - 1.5) - 1.1, (0.5 - Math.abs(nx)) * 0.3)));
+      return [
+        lamp('indicator_L', 1, (x) => 0.95 - x), lamp('indicator_R', 1, (x) => 0.95 + x), lamp('headlight', 1),
+        lamp('indicator_L', -1, (x) => 0.95 - x), lamp('indicator_R', -1, (x) => 0.95 + x), lamp('taillight', -1),
+        { part: 'taxi_sign', g: (x, y, z) => (nose ? Math.max(dest(Math.abs(x), y), end(z, nose)) : 1) },
+        { part: 'glass', g: door }, { part: 'trim', g: (...a) => door(...a) - 0.05 },
+        { part: 'glass', g: (...a) => Math.min(ws(...a), side(...a)) }, { part: 'trim', g: (...a) => Math.min(ws(...a), side(...a)) - 0.05 },
+        { part: 'livRed', g: (x, y) => y - 0.95 }, band(2.74, 2.84, 'livRed'),
+        { part: 'black', g: (x, y) => y - 0.45 },
+      ];
+    },
+  });
+}
+const TRAM = {
+  id: 'tram', label: 'Straßenbahn', category: 'tram', drivable: false, L: 30, W: 2.4, H: 3.15, r: 0.34, tyreW: 0.12, axles: [12.2, -12.2], color: 0xf1ede2, mass: 38000, power: 0.4, sillUD: 0.45,
+  rimStyle: 'steel', rim: 0x55595e, rimRatio: 0.85, wheelX: 0.72, wheelSeg: 16, err: 0.004, seatX: 0, seatY: 0.99, seatZ: 13.55,
+  extraWheels: (wx) => [['wheel_B1L', wx, 0], ['wheel_B1R', -wx, 0]],
+  parts: { livRed: [0xc4122f, CLS.paint], seat: [0x7a1a24, CLS.interior], floor: [0x3a3c3f, CLS.interior], pole: [0xd6b21c, CLS.gloss], skirt: [0x1d1e20, CLS.matte] },
+  bodies: () => [tramSection(5.15, 15, 1), tramSection(-4.85, 4.85, 0), tramSection(-15, -5.15, -1)],
+  details: (X) => {
+    const { add } = X;
+    for (const z of [5.0, -5.0]) { add(rb(2.25, 2.6, 0.32, 0.08, 0, 1.7, z), 'skirt'); for (let i = -2; i <= 2; i++) add(box(2.27, 2.5, 0.02, 0, 1.7, z + i * 0.05), 'black'); }
+    for (const z of [12.2, 0, -12.2]) add(rb(2.2, 0.32, 2.4, 0.05, 0, 0.36, z), 'skirt'); // bogie frames
+    for (const z of [10, -10, 0]) add(rb(1.6, 0.3, 2.6, 0.08, 0, 3.27, z), 'paint'); // roof equipment
+    // pantograph on the centre section
+    add(rb(0.9, 0.12, 0.9, 0.03, 0, 3.2, 0), 'skirt');
+    const arm = (a, b) => { const A = new THREE.Vector3(...a), B = new THREE.Vector3(...b), g = new THREE.CylinderGeometry(0.025, 0.025, A.distanceTo(B), 6); g.deleteAttribute('uv'); g.translate(0, A.distanceTo(B) / 2, 0); g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), B.clone().sub(A).normalize())); g.translate(A.x, A.y, A.z); add(g, 'black'); };
+    for (const sx of [-0.25, 0.25]) { arm([sx, 3.25, -0.35], [sx * 0.6, 3.75, 0.55]); arm([sx * 0.6, 3.75, 0.55], [sx * 1.2, 4.25, -0.1]); }
+    add(rb(1.5, 0.05, 0.12, 0.02, 0, 4.27, -0.1), 'metal');
+    // interior: floor, seats, poles
+    add(box(2.3, 0.05, 29, 0, 0.42, 0), 'floor');
+    for (let z = 13; z > -13.5; z -= 1.15) {
+      if (TRAM_DOORS.some((c) => Math.abs(z - c) < 1.0) || Math.abs(Math.abs(z) - 5) < 0.5) continue;
+      for (const sx of [-1, 1]) { add(rb(0.85, 0.1, 0.42, 0.03, sx * 0.68, 0.9, z), 'seat'); add(rb(0.85, 0.5, 0.08, 0.03, sx * 0.68, 1.18, z - 0.22, -0.12), 'seat'); }
+    }
+    for (const c of TRAM_DOORS) for (const sx of [-1, 1]) add(cyl(0.02, 0.02, 2.0, sx * 0.9, 1.45, c + 0.75, 6), 'pole');
+    add(rb(0.5, 0.12, 0.5, 0.04, 0, 1.06, 13.6), 'seat'); add(rb(1.8, 0.4, 0.5, 0.06, 0, 1.2, 14.3), 'skirt');
+  },
+};
+
+// --- city bicycle (paired wheels: FR/RR pivots carry no mesh) --------------------------------------------
+const tubeSeg = (a, b, r, seg = 6) => { const A = new THREE.Vector3(...a), B = new THREE.Vector3(...b), l = A.distanceTo(B), g = new THREE.CylinderGeometry(r, r, l, seg, 1, true); g.deleteAttribute('uv'); g.translate(0, l / 2, 0); g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), B.clone().sub(A).normalize())); g.translate(A.x, A.y, A.z); return g; };
+const arcTube = (cz, cy, R, a0, a1, r, seg = 12) => { const pts = []; for (let i = 0; i <= seg; i++) { const a = lerp(a0, a1, i / seg); pts.push(new THREE.Vector3(0, cy + Math.sin(a) * R, cz + Math.cos(a) * R)); } const g = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), seg, r, 4); g.deleteAttribute('uv'); return g; };
+const BIKE = {
+  id: 'bicycle', label: 'Fahrrad', category: 'bike', L: 1.8, W: 0.6, H: 1.15, r: 0.34, tyreW: 0.035, axles: [0.55, -0.53], color: 0x2c5e4a, mass: 95, power: 0.25, sillUD: 0.3,
+  rimStyle: 'bike', rim: 0xb9bec4, rimRatio: 0.9, wheelSeg: 20, seatX: 0, seatY: 0.845, seatZ: -0.29, ud: { physTrack: 0.5 },
+  wheels: [['wheel_FL', 0.001, 0.55], ['wheel_FR', -0.001, 0.55], ['wheel_RL', 0.001, -0.53], ['wheel_RR', -0.001, -0.53]], hiddenWheels: ['wheel_FR', 'wheel_RR'],
+  parts: { seatP: [0x2a2018, CLS.interior] },
+  details: (X) => {
+    const { add } = X, T = (a, b, r = 0.017, part = 'paint') => add(tubeSeg(a, b, r), part);
+    const bb = [0, 0.29, -0.05], st = [0, 0.82, -0.2], ht0 = [0, 0.74, 0.44], ht1 = [0, 0.9, 0.4], ra = [0, 0.34, -0.53], fa = [0, 0.34, 0.55];
+    T(bb, st, 0.016); T(bb, ht0, 0.02); T([0, 0.38, 0.0], [0, 0.82, 0.41], 0.016); T(ht0, ht1, 0.022);
+    for (const sx of [-0.04, 0.04]) { T([sx, bb[1], bb[2]], [sx, ra[1], ra[2]], 0.01); T([sx, 0.78, -0.21], [sx, ra[1], ra[2]], 0.009); T([sx * 0.9, ht0[1], ht0[2] + 0.01], [sx, fa[1], fa[2]], 0.011, 'chrome'); }
+    T(ht1, [0, 1.02, 0.36], 0.012, 'chrome'); T([-0.29, 1.03, 0.24], [0.29, 1.03, 0.24], 0.011, 'black');
+    for (const sx of [-1, 1]) { T([sx * 0.29, 1.03, 0.24], [sx * 0.08, 1.03, 0.37], 0.011, 'chrome'); add(cyl(0.017, 0.017, 0.1, sx * 0.24, 1.03, 0.24, 8, 0, Math.PI / 2), 'black'); X.addLight(box(0.012, 0.02, 0.02, sx * 0.296, 1.03, 0.24), sx > 0 ? 'indicator_L' : 'indicator_R'); }
+    T(st, [0, 0.93, -0.235], 0.012, 'chrome'); add(rb(0.17, 0.06, 0.27, 0.03, 0, 0.955, -0.25), 'seatP');
+    add(cyl(0.1, 0.1, 0.008, 0.06, 0.29, -0.05, 18, 0, Math.PI / 2), 'metal'); T([0.07, 0.29, -0.05], [0.07, 0.22, 0.08], 0.01, 'metal'); T([-0.07, 0.29, -0.05], [-0.07, 0.36, -0.18], 0.01, 'metal');
+    add(box(0.08, 0.02, 0.05, 0.11, 0.22, 0.08), 'black'); add(box(0.08, 0.02, 0.05, -0.11, 0.36, -0.18), 'black');
+    add(box(0.11, 0.07, 0.6, 0.02, 0.28, -0.3), 'black'); // chain guard
+    add(arcTube(0.55, 0.34, 0.37, 0.15, 2.2, 0.025), 'paint'); add(arcTube(-0.53, 0.34, 0.37, 0.9, 2.9, 0.025), 'paint'); // mudguards
+    add(rb(0.16, 0.015, 0.36, 0.005, 0, 0.74, -0.5), 'metal'); T([0.07, 0.74, -0.66], [0.04, 0.36, -0.55], 0.007, 'metal'); T([-0.07, 0.74, -0.66], [-0.04, 0.36, -0.55], 0.007, 'metal'); // rack
+    add(rb(0.34, 0.24, 0.26, 0.03, 0, 1.0, 0.56), [0.25, 0.17, 0.09, CLS.matte / 15]); // front basket
+    X.addLight(cyl(0.03, 0.03, 0.04, 0, 0.88, 0.47, 10, Math.PI / 2), 'headlight');
+    X.addLight(box(0.06, 0.03, 0.02, 0, 0.74, -0.69), 'taillight');
+  },
+};
+
+// --- refuse truck (Müllwagen), orange city-cleaning style --------------------------------------------
+const REFUSE = {
+  id: 'refuse', label: 'Müllwagen', category: 'truck', L: 9.6, W: 2.5, H: 3.4, r: 0.5, tyreW: 0.32, axles: [3.3, -1.9], color: 0xf07d00, mass: 12000, power: 0.5, sillUD: 0.6,
+  rimStyle: 'truck', rim: 0xc9ccd0, rimRatio: 0.6, wheelX: 1.03, wheelSeg: 24, err: 0.0035, seatX: 0.38,
+  extraWheels: (wx) => [['wheel_RL2', wx, -3.25], ['wheel_RR2', -wx, -3.25]],
+  interior: { seatZ: 3.5, seatY: 1.5, dashZ: 4.25, dashY: 1.78, inW: 1.1 },
+  parts: { stripe: [0xf2f2f0, CLS.paint], frame: [0x1a1b1d, CLS.matte], hopper: [0x26282a, CLS.matte] },
+  ud: { sirenColors: [0xff9a00, 0xffb400] },
+  bodies: () => {
+    const arF = { z: 3.3, y: 0.5, R: 0.6 }, arR = [{ z: -1.9, y: 0.5, R: 0.6 }, { z: -3.25, y: 0.5, R: 0.6 }];
+    const cab = simpleBody({
+      def: { poly: [[4.62, 0.45, 1], [4.78, 0.55], [4.8, 1.0], [4.78, 1.6], [4.7, 2.5], [4.55, 2.8], [4.35, 2.9], [2.6, 2.9], [2.45, 2.85], [2.4, 2.6], [2.4, 0.5, 1], [4.62, 0.45, 1]],
+        sec: [[0.45, 1.18], [0.55, 1.25], [2.6, 1.25], [2.82, 1.18], [2.95, 0.9]], hw0: 1.25, cl: { fx: 0.14, fz: 0.14, rx: 0.05, rz: 0.05 }, ch: { fx: 0.14, fz: 0.14, rx: 0.05, rz: 0.05 }, arches: [arF], bowF: 0.05 },
+      b0: [-1.32, 0.4, 2.35], b1: [1.32, 2.96, 4.86], cell: 0.03,
+      regions: (B) => cabRegions(B, { head: [[0.7, 0.52], [0.7, 0.68], [1.15, 0.7], [1.15, 0.52]], headDepth: 0.25, indX: 0.97, grille: [[0, 0.85], [0, 1.42], [0.8, 1.42], [0.8, 0.85]], wsBot: 1.6, wsTop: 2.62,
+        side: [[2.6, 1.65], [2.6, 2.55], [4.3, 2.55], [4.48, 1.65]], arches: [arF], lowY: 0.5, livery: [band(1.38, 1.48, 'stripe')] }),
+    });
+    const body = simpleBody({
+      def: { poly: [[2.3, 0.95, 1], [2.35, 1.1], [2.35, 3.1], [2.22, 3.36], [-3.5, 3.4], [-3.85, 3.28], [-4.35, 2.85], [-4.8, 2.15], [-4.8, 1.1], [-4.7, 0.95, 1], [2.3, 0.95, 1]],
+        sec: [[0.95, 1.15], [1.05, 1.25], [2.9, 1.25], [3.2, 1.14], [3.42, 0.8]], hw0: 1.25, cl: { fx: 0.12, fz: 0.12, rx: 0.25, rz: 0.25 }, ch: { fx: 0.12, fz: 0.12, rx: 0.25, rz: 0.25 }, arches: arR, bowF: 0, bowR: 0.06 },
+      b0: [-1.32, 0.9, -4.86], b1: [1.32, 3.46, 2.4], cell: 0.035,
+      regions: () => {
+        const tail = poly2([[0.78, 1.1], [0.78, 1.45], [1.18, 1.45], [1.18, 1.1]], 0.015), gT = (x, y, z) => Math.max(tail(Math.abs(x), y), z + 4.55);
+        return [
+          { part: 'indicator_L', g: (x, y, z) => Math.max(gT(x, y, z), y - 1.22, -x) }, { part: 'indicator_R', g: (x, y, z) => Math.max(gT(x, y, z), y - 1.22, x) },
+          { part: 'reverse', g: (x, y, z) => Math.max(gT(x, y, z), Math.abs(x) - 0.86) }, { part: 'taillight', g: gT },
+          { part: 'hopper', g: (x, y, z, nx, ny, nz) => Math.max(Math.abs(x) - 0.9, Math.abs(y - 1.75) - 0.4, (0.4 + nz) * 0.3) },
+          band(1.3, 1.42, 'stripe'), band(2.6, 2.7, 'stripe'),
+          ...arR.map((a) => ({ part: 'liner', g: (x, y, z) => Math.hypot(z - a.z, y - a.y) - a.R - 0.015 })), { part: 'frame', g: (x, y) => y - 1.02 },
+        ];
+      },
+    });
+    return [cab, body];
+  },
+  details: (X) => {
+    const { add } = X;
+    add(box(0.95, 0.3, 8.6, 0, 0.8, -0.3), 'frame');
+    for (const sx of [-1, 1]) {
+      for (const y of [0.62, 0.86]) add(box(0.03, 0.06, 2.6, sx * 1.2, y, 0.65), 'metal'); // side guards
+      add(rb(0.5, 0.06, 0.35, 0.02, sx * 0.85, 0.62, -4.95), 'metal'); // loader steps
+      add(cyl(0.02, 0.02, 1.0, sx * 1.12, 2.0, -4.83, 6), 'metal'); // grab handles
+      X.addLight(rb(0.2, 0.14, 0.18, 0.06, sx * 1.0, 3.42, -3.6), 'siren');
+      const h = X.side(sx, 2.1, 4.4); if (h) { add(rb(0.06, 0.06, 0.25, 0.02, h.p[0] + sx * 0.1, 2.1, 4.35), 'black'); add(rb(0.07, 0.45, 0.24, 0.03, sx * 1.42, 2.15, 4.35), 'black'); }
+    }
+    add(rb(1.9, 0.6, 0.14, 0.03, 0, 1.0, -4.95), 'metal'); add(box(1.7, 0.08, 0.2, 0, 1.32, -4.95), 'frame'); // bin lifter comb
+    X.addLight(rb(1.5, 0.11, 0.28, 0.05, 0, 2.97, 3.6), 'siren'); add(rb(1.6, 0.05, 0.3, 0.02, 0, 2.92, 3.6), 'black');
+    X.plate(1, 0.42); X.plateAt(-1, 0, 0.62, -4.82);
+  },
+};
+
 /** Common car spec builder. */
 function car(o) {
   const s = { category: 'car', bodies: carBody, details: carDetails, cell: 0.016, ...o };
@@ -910,7 +1053,7 @@ export const CARS = [
     p: { ...ESTATE_P, mirrorPart: 'livBlue',
       livery: (_b, { belt }) => [{ part: 'livBlue', g: (x, y, z, nx) => Math.max(y - (belt(z) - 0.1), 0.34 - y, (0.6 - Math.abs(nx)) * 0.3) }],
       extra: (X) => { roofBar(-0.1, true)(X); for (const sx of [-1, 1]) X.addLight(box(0.1, 0.03, 0.02, sx * 0.25, 0.44, 2.48), 'siren'); } } }),
-  BUS, AMB, TOW, SCOOTER,
+  BUS, AMB, TOW, SCOOTER, TRAM, BIKE, REFUSE,
 ];
 
 export function makeCar(s) { return build(s); }

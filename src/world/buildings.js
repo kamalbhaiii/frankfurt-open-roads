@@ -24,6 +24,7 @@ import { area, openRing, hash, pip, segDist } from '../core/math.js';
 import { DISTRICTS, RC, roadWidth } from '../core/config.js';
 import { assets } from '../core/assets.js';
 import { uniforms } from './materials.js';
+import { stationFootprint, STATION_RINGS } from './station/zones.js';
 
 // ---------------------------------------------------------------- texture layers
 /** [file prefix, tile size in metres] — index = layer id used by the shader. */
@@ -1222,6 +1223,7 @@ export function buildBuildings(data, phys, buildingIndex) {
     // even when no sampling point lands inside the overlap.
     if (roads.overlaps(ring)) return;
     buildingIndex.add(ring);
+    if (stationFootprint(ring)) return; // replaced by the Hauptbahnhof model (hauptbahnhof.js)
     let cx = 0,
       cz = 0;
     for (const p of ring) {
@@ -1241,6 +1243,8 @@ export function buildBuildings(data, phys, buildingIndex) {
     const rw = String(data.pal[b.col] || '').includes('red');
     recs.push({ bi, ring, A: Math.abs(A), cx, cz, h: Math.max(b.h, b.mh + 2.5), mh: b.mh, sd: hash(bi + 0.5), osmCol, redWhite: rw });
   });
+
+  for (const r of STATION_RINGS) buildingIndex.add(r);
 
   // ---- landmarks / hero tagging
   const near = (p, r) => recs.filter((q) => Math.hypot(q.cx - p.x, q.cz - p.z) < r);

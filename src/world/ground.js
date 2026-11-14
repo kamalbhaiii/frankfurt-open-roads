@@ -12,6 +12,57 @@ import { GeoBuilder, addFlatPoly, addBox } from './geometry.js';
 import { surfaceMaterial, railMaterial, railingMaterial } from './materials.js';
 import { buildStreets, TileBuckets, quadN, strip as addRibbon } from './streets.js';
 
+/**
+ * Flat-ground collision mesh: splits every triangle along its longest edge until all edges
+ * are <= maxEdge. Returns a {attributes.position.array, index.array} shape for phys.push.
+ */
+export function subdivideFlat(geo, maxEdge) {
+  const P = geo.attributes.position.array,
+    I = geo.index.array;
+  const v = [],
+    idx = [],
+    m2 = maxEdge * maxEdge;
+  // unshared vertices: a trimesh doesn't need them welded, and welding was the slow part
+  const vert = (p) => {
+    v.push(p[0], p[1], p[2]);
+    return v.length / 3 - 1;
+  };
+  const d2 = (p, q) => (p[0] - q[0]) ** 2 + (p[2] - q[2]) ** 2;
+  const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
+  const stack = [];
+  for (let t = 0; t < I.length; t += 3) {
+    const a = I[t] * 3,
+      b = I[t + 1] * 3,
+      c = I[t + 2] * 3;
+    stack.push([P[a], P[a + 1], P[a + 2]], [P[b], P[b + 1], P[b + 2]], [P[c], P[c + 1], P[c + 2]]);
+    while (stack.length) {
+      const C = stack.pop(),
+        B = stack.pop(),
+        A = stack.pop();
+      const ab = d2(A, B),
+        bc = d2(B, C),
+        ca = d2(C, A),
+        L = Math.max(ab, bc, ca);
+      if (L <= m2) {
+        idx.push(vert(A), vert(B), vert(C));
+        continue;
+      }
+      // split the longest edge at its midpoint, keeping the winding order
+      if (L === ab) {
+        const M = mid(A, B);
+        stack.push(A, M, C, M, B, C);
+      } else if (L === bc) {
+        const M = mid(B, C);
+        stack.push(A, B, M, A, M, C);
+      } else {
+        const M = mid(C, A);
+        stack.push(A, B, M, M, B, C);
+      }
+    }
+  }
+  return { attributes: { position: { array: v } }, index: { array: idx } };
+}
+
 /** Altstadt (Römerberg / Alte Nikolaikirche): cobbled lanes and squares. */
 function altstadtZone(data) {
   const n = (data.names || []).find((p) => /Nikolaikirche/.test(p.name));
@@ -50,7 +101,9 @@ export function buildGround(data, phys) {
   const ground = new THREE.Mesh(groundGeo, mats.ground);
   ground.receiveShadow = true;
   scene.add(ground);
-  phys.push(groundGeo);
+  // collision copy split into <=160 m triangles (~43k): the triangulated 8 km polygon is ~255
+  // km-long slivers, which the character controller sinks into or falls through
+  phys.push(subdivideFlat(groundGeo, 160));
 
   // ---- quay walls: Main sandstone (uv = metres along / up), darker wet band at the waterline, granite coping
   const gw = new GeoBuilder(),

@@ -125,7 +125,11 @@ export class RoadNetwork {
       const forward = to.s >= from.s;
       if (forward || !(respectOneway && from.edge.oneway)) {
         const dir = forward ? 1 : -1;
-        return { points: this.slice(from.edge, from.s, to.s), length: Math.abs(to.s - from.s), edges: Math.abs(to.s - from.s) > 0.01 ? [{ edge: from.edge, dir }] : [] };
+        return {
+          points: this.slice(from.edge, from.s, to.s),
+          length: Math.abs(to.s - from.s),
+          edges: Math.abs(to.s - from.s) > 0.01 ? [{ edge: from.edge, dir }] : [],
+        };
       }
     }
     // virtual start: from the snapped point we can reach edge.b (forward) or edge.a (if two-way)

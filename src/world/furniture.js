@@ -1341,7 +1341,7 @@ class StreetScene {
     this.junctions();
     this.crossings();
     this.stops();
-    this.transitWorksites();
+    if (!ctx.station) this.transitWorksites(); // the real Hbf replaces the placeholder work zone
     this.midBlock();
     this.pedZones();
     this.lampBins();

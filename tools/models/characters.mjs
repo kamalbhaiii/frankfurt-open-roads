@@ -11,7 +11,7 @@
 // Rig: hips > spine > chest > neck > head, chest > shoulder > upperarm > forearm > hand,
 // hips > thigh > shin > foot > toe. Rest pose: standing, arms straight down, facing +Z, feet at y=0.
 // Clips are sampled by posing the real bones; walk/run/idle/sit use two-bone IK so planted feet stay fixed
-// (walk authored for 1.45 m/s, run 6 m/s, jog 3 m/s, walk_senior 1.0 m/s, cycle 5 m/s).
+// (walk authored for 1.45 m/s, run 6 m/s, jog 3 m/s, walk_senior 1.0 m/s, cycling 5 m/s).
 // Hand-held accessories (umbrella, phone, cup) are authored in a "hold" arm pose whose local bone
 // rotations are exported in userData.holds; the game applies them on top of the clips while shown.
 import { THREE, mergeVertices } from './common.mjs';
@@ -25,7 +25,7 @@ export const PAL_KEYS = ['skin', 'hair', 'top', 'jacket', 'pants', 'shoes', 'eye
 export const PARTS = ['core', 'torso', 'arms_top', 'arms_short', 'arms_jacket', 'arms_puffer', 'legs_trousers', 'legs_shorts', 'legs_skirt', 'legs_tights',
   'jacket_open', 'suit', 'collar', 'tie', 'coat', 'puffer', 'hoodie', 'shoes_sneaker', 'shoes_dress', 'shoes_boot',
   'hair_short', 'hair_side', 'hair_buzz', 'hair_bald', 'hair_curly', 'hair_bob', 'hair_long', 'hair_ponytail', 'hair_bun', 'hair_pixie', 'beard', 'mustache',
-  'hat_beanie', 'hat_cap', 'hat_flatcap', 'hat_sunhat', 'hat_peak', 'glasses', 'scarf', 'backpack', 'crossbody', 'briefcase', 'shopbag', 'cup', 'phone', 'camera', 'umbrella', 'headphones', 'bicycle'];
+  'hat_beanie', 'hat_cap', 'hat_flatcap', 'hat_sunhat', 'hat_peak', 'glasses', 'scarf', 'backpack', 'crossbody', 'briefcase', 'shopbag', 'cup', 'phone', 'camera', 'umbrella', 'headphones'];
 const PID = Object.fromEntries(PARTS.map((p, i) => [p, i]));
 const BASE_PARTS = ['core', 'torso', 'arms_top', 'legs_trousers', 'shoes_sneaker'].map((p) => PID[p]);
 
@@ -144,7 +144,6 @@ function rbox2(w, h, d, r, seg = 2) {
     const c = V3(Math.max(-hx, Math.min(hx, v.x)), Math.max(-hy, Math.min(hy, v.y)), Math.max(-hz, Math.min(hz, v.z))); const n = v.clone().sub(c); if (n.lengthSq() > 1e-12) n.setLength(r); p.setXYZ(i, c.x + n.x, c.y + n.y, c.z + n.z); }
   return g;
 }
-const at = (g, x, y, z) => { g.translate(x, y, z); return g; };
 const sph = (r, sx, sy, sz, ws = 10, hs = 8) => { const g = new THREE.SphereGeometry(r, ws, hs); g.scale(sx, sy, sz); return g; };
 const cylAB = (a, b, r0, r1, seg = 8) => { // cylinder from point a to point b
   const d = b.clone().sub(a), L = d.length(); const g = new THREE.CylinderGeometry(r1, r0, L, seg, 1);
@@ -275,10 +274,10 @@ function makePoser(bones, S) {
 // ---------------------------------------------------------------------------------------------
 // rigs shared with the game (male scale; female is the same rig scaled by 0.96)
 // ---------------------------------------------------------------------------------------------
-// bicycle: root on the ground under the crank axle, facing +Z
-export const CYCLE_RIG = { bb: [0, 0.28, 0], crank: 0.17, saddle: [0, 0.92, -0.2], grips: [0.27, 1.03, 0.27], rearAxle: [0, 0.35, -0.55], frontAxle: [0, 0.35, 0.6], wheelR: 0.35, speed: 5 };
+// bicycle (character-root space, root placed like a driver: x = seatX, y = seatY - 0.78, z = seatZ - 0.05 of the bike)
+export const CYCLE_RIG = { bb: [0, 0.225, 0.29], crank: 0.16, saddle: [0, 0.92, 0.09], grips: [0.25, 0.965, 0.58], speed: 5 };
 // bench: root on the ground right below the hip point (≈0.15 m behind the seat's front edge), facing away from the backrest
-export const BENCH_RIG = { seatY: 0.45 };
+export const BENCH_RIG = { seatY: 0.48 };
 
 // arm hold poses: wrist target (character space, male scale) + elbow pole
 const HOLDS = {
@@ -288,10 +287,10 @@ const HOLDS = {
 };
 function holdPose(name, S) { const h = HOLDS[name]; return { pos: [0, 0.98 * S, 0], arms: { [h.sd]: { wrist: V3(...h.wrist).multiplyScalar(S), pole: V3(...h.pole).normalize() } } }; }
 function cyclePose(P, u) {
-  const { S, hy } = P, TAU = Math.PI * 2, sin = Math.sin, cos = Math.cos;
-  const bb = V3(0, CYCLE_RIG.bb[1] * S, 0), cr = CYCLE_RIG.crank * S;
-  const pose = { pos: [0, hy + 0.02 * S, -0.17 * S], r: {
-    hips: [0.22, 0, 0], spine: [0.1 + 0.01 * sin(2 * u * TAU), 0, 0], chest: [0.08, 0.02 * sin(u * TAU), 0], neck: [-0.18, 0, 0], head: [-0.15, 0.08 * sin(u * TAU * 0.5), 0],
+  const { S } = P, TAU = Math.PI * 2, sin = Math.sin, cos = Math.cos;
+  const bb = V3(...CYCLE_RIG.bb), cr = CYCLE_RIG.crank;
+  const pose = { pos: [0, 0.99, 0.06], r: {
+    hips: [0.3, 0, 0], spine: [0.1 + 0.01 * sin(2 * u * TAU), 0, 0], chest: [0.08, 0.02 * sin(u * TAU), 0], neck: [-0.18, 0, 0], head: [-0.15, 0.08 * sin(u * TAU * 0.5), 0],
   } };
   pose.legs = {};
   for (const [sd, sx, ph] of [['L', 1, 0], ['R', -1, 0.5]]) {
@@ -301,7 +300,7 @@ function cyclePose(P, u) {
     pose.legs[sd] = { ankle: pedal.clone().add(V3(sx * 0.11 * S, 0.075 * S, -0.06 * S)), pitch, pole: V3(sx * 0.12, 0.3, 1).normalize() };
   }
   const g = CYCLE_RIG.grips;
-  pose.arms = { L: { wrist: V3(g[0] * S, g[1] * S, g[2] * S), pole: V3(0.6, -0.6, -0.5).normalize() }, R: { wrist: V3(-g[0] * S, g[1] * S, g[2] * S), pole: V3(-0.6, -0.6, -0.5).normalize() } };
+  pose.arms = { L: { wrist: V3(g[0], g[1], g[2]), pole: V3(0.6, -0.6, -0.5).normalize() }, R: { wrist: V3(-g[0], g[1], g[2]), pole: V3(-0.6, -0.6, -0.5).normalize() } };
   pose.after = { 'hand.L': [-1.3, 0, -0.2], 'hand.R': [-1.3, 0, 0.2] };
   return pose;
 }
@@ -335,8 +334,6 @@ export function makeCharacter(female) {
     const hand = bones['hand.' + h.sd]; const posed = hand.matrixWorld.clone(); P.rest(); const restM = hand.matrixWorld.clone();
     holdM[name] = { M: restM.multiply(posed.clone().invert()), posed };
   }
-  P.apply(cyclePose(P, 0)); const hipsCycle = bones.hips.matrixWorld.clone(); P.rest();
-  const bikeM = bones.hips.matrixWorld.clone().multiply(hipsCycle.invert());
   P.rest();
   const wp = (n) => V3().setFromMatrixPosition(bones[n].matrixWorld);
 
@@ -346,7 +343,7 @@ export function makeCharacter(female) {
     : { skin: 0xc99272, hair: 0x2b2018, top: 0x24456e, jacket: 0x3b3e44, pants: 0x4a5a78, shoes: 0x4a3020, eyes: 0x3a2a1c, lips: 0xa86a5e, sole: 0xe8e4dc, sclera: 0xf3f0ea,
       accent: 0x7a1f2b, hat: 0x2e3a4a, bag: 0x3a2e24, metal: 0x1e1f22, legwear: 0xb08068, socks: 0x2a2a2e, umbrella: 0x1a2a40, belt: 0x2a1a12, bike: 0x2f5a4a };
   const B = new Builder();
-  for (const lod of [0, 1]) { B.P.lod = lod; buildBody(B, { S, female, bones, wp, holdM, bikeM, lod, shW }); }
+  for (const lod of [0, 1]) { B.P.lod = lod; buildBody(B, { S, female, bones, wp, holdM, lod, shW }); }
   const ao = bakeAO(B);
   const geo = B.build(palette, bi, ao);
   const mesh = new THREE.SkinnedMesh(geo, new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.75, metalness: 0, name: 'vc' }));
@@ -369,7 +366,7 @@ export function makeCharacter(female) {
 // ---------------------------------------------------------------------------------------------
 // BODY + VARIANTS (called once per level of detail)
 // ---------------------------------------------------------------------------------------------
-function buildBody(B, { S, female, bones, wp, holdM, bikeM, lod }) {
+function buildBody(B, { S, female, wp, holdM, lod }) {
   const hi = lod === 0;
   const s = (x) => x * S;
   const one = (b) => [[b, 1]];
@@ -390,7 +387,7 @@ function buildBody(B, { S, female, bones, wp, holdM, bikeM, lod }) {
     [1.475, 0.095, 0.058, 0.062, -0.008], [1.49, 0.06, 0.05, 0.052, -0.008]];
   const prof = (y) => {
     if (y <= 0.9) { // below the hips (coat / skirt hems): flare from the hip row
-      const k = (0.9 - y); const p = prof(0.9001); return { rx: p.rx * (1 + k * 0.3), rzF: p.rzF * (1 + k * 0.45), rzB: p.rzB * (1 + k * 0.35), cz: p.cz };
+      const k = (0.9 - y); const p = prof(0.9001); return { rx: p.rx * (1 + k * 0.55), rzF: p.rzF * (1 + k * 0.95), rzB: p.rzB * (1 + k * 0.75), cz: p.cz };
     }
     let i = 0; while (i < TT.length - 2 && TT[i + 1][0] < y) i++;
     const a = TT[i], b = TT[i + 1], t = Math.min(1, Math.max(0, (y - a[0]) / (b[0] - a[0])));
@@ -470,7 +467,7 @@ function buildBody(B, { S, female, bones, wp, holdM, bikeM, lod }) {
       const ear = sph(s(0.028), 0.36, 1, 0.66, hi ? 8 : 5, hi ? 6 : 4); ear.rotateY(sx * 0.35); ear.rotateX(-0.1);
       feature(ear, 'skin', V3(sx * s(HR[0] + 0.004), hc.y - s(0.006), hc.z - s(0.012)), 0.45);
       if (hi) { // eyes: sclera, iris, upper lid; brows
-        const c = skull(dir(sx * 0.36, 0.1), 0, true).add(V3(0, 0, -s(0.009)));
+        const c = skull(dir(sx * 0.36, 0.1), 0, true).add(V3(0, 0, -s(0.0035)));
         feature(sph(s(0.0125), 1, 0.92, 0.75, 10, 8), 'sclera', c.clone());
         feature(sph(s(0.0062), 1, 1, 0.45, 8, 6), 'eyes', c.clone().add(V3(0, 0, s(0.0088))));
         const lid = new THREE.SphereGeometry(s(0.0138), 10, 5, 0, Math.PI * 2, 0, 1.15); lid.scale(1.05, 0.95, 0.85); lid.rotateX(0.35);
@@ -652,7 +649,7 @@ function buildBody(B, { S, female, bones, wp, holdM, bikeM, lod }) {
           pts.push(V3(ft.x + s(hw * fs) * sn * (c < 0 ? 1 : 0.92), s(cy + ry * (c > 0 ? c : -(Math.abs(c) ** 0.35))), s(z * fs))); }
         return { pts, col: colUpper, w: footW };
       }));
-      const sole = rbox2(s(0.094 * fs), s(soleH), s(0.286 * fs), s(Math.min(soleH / 2 - 0.001, 0.008)), 1); sole.translate(ft.x, s(soleH / 2), s(0.062 * fs)); B.geo(sole, soleCol, footW);
+      const sole = rbox2(s(0.088 * fs), s(soleH), s(0.28 * fs), s(Math.min(soleH / 2 - 0.001, 0.008)), 1); sole.translate(ft.x, s(soleH / 2), s(0.062 * fs)); B.geo(sole, soleCol, footW);
     };
     const SNEAK = [[-0.083, 0.004, 0.035, 0.05], [-0.078, 0.025, 0.02, 0.087], [-0.06, 0.04, 0.018, 0.11], [-0.02, 0.044, 0.018, 0.114], [0.03, 0.046, 0.018, 0.098],
       [0.08, 0.049, 0.018, 0.074], [0.13, 0.048, 0.018, 0.06], [0.175, 0.041, 0.018, 0.05], [0.198, 0.025, 0.02, 0.04], [0.206, 0.004, 0.024, 0.034]];
@@ -663,8 +660,6 @@ function buildBody(B, { S, female, bones, wp, holdM, bikeM, lod }) {
       shoe(SNEAK.map(([z, w, yb, yt]) => [z, w + 0.003, yb, yt + 0.006]), 'belt', 0.022);
       B.loft([[0.1, 0.05], [0.14, 0.052], [0.2, 0.054], [0.215, 0.056], [0.215, 0.04]].map(([y, r]) => ({ pts: ringXZ(ft.x, s(y), s(-0.008), s(r * fs), s(r * fs), s(r * fs), NL), col: 'shoes', w: (p) => chainW(p.y, ['shin.' + sd, 'foot.' + sd], [[s(0.12), s(0.04)]]) })));
     });
-    // bicycle pedal under the ball of the foot
-    B.at('bicycle', () => { const pd = rbox2(s(0.1), s(0.02), s(0.07), s(0.005), 1); pd.translate(ft.x, -s(0.012), s(0.11)); B.geo(pd, 'metal', footW); });
   }
   // skirt (worn with legs_skirt): waist to knee, hem follows the thighs
   B.at('legs_skirt', () => {
@@ -811,30 +806,6 @@ function buildBody(B, { S, female, bones, wp, holdM, bikeM, lod }) {
     const l = new THREE.CylinderGeometry(s(0.026), s(0.028), s(0.05), hi ? 10 : 6); l.rotateX(Math.PI / 2); l.translate(p.x, p.y - s(0.005), p.z + s(0.045)); B.geo(l, 'metal', torsoW0);
     for (const sx of [-1, 1]) B.tube([V3(p.x + sx * s(0.055), p.y + s(0.02), p.z), tPt(1.36, sx * 0.45, 0.012), V3(sx * s(0.06), s(1.475), s(-0.03)), V3(0, s(1.47), s(-0.075))], s(0.004), 4, 'metal', torsoW0, { flat: 0.4 });
   });
-  // ---------------- bicycle (authored in the cycle pose, rigid on the hips) ----------------
-  B.at('bicycle', () => {
-    const R = CYCLE_RIG, v = (a) => V3(a[0] * S, a[1] * S, a[2] * S), add = (g, col) => { g.applyMatrix4(bikeM); B.geo(g, col, one('hips')); };
-    const tub = (a, b, r, col = 'bike') => add(cylAB(a, b, s(r), s(r), hi ? 6 : 4), col);
-    const bb = v(R.bb), ra = v(R.rearAxle), fa = v(R.frontAxle), st = V3(0, s(0.84), s(-0.17)), ht0 = V3(0, s(0.62), s(0.42)), ht1 = V3(0, s(0.8), s(0.38));
-    for (const ax of [ra, fa]) {
-      const t = new THREE.TorusGeometry(s(R.wheelR - 0.02), s(0.02), hi ? 6 : 3, hi ? 28 : 12); t.rotateY(Math.PI / 2); t.translate(ax.x, ax.y, ax.z); add(t, 'metal');
-      const rim = new THREE.TorusGeometry(s(R.wheelR - 0.045), s(0.008), 3, hi ? 24 : 10); rim.rotateY(Math.PI / 2); rim.translate(ax.x, ax.y, ax.z); add(rim, 'sole');
-      if (hi) for (let k = 0; k < 8; k++) { const a = k * Math.PI / 8; tub(ax.clone().add(V3(0, Math.sin(a), Math.cos(a)).multiplyScalar(s(0.3))), ax.clone().add(V3(0, -Math.sin(a), -Math.cos(a)).multiplyScalar(s(0.3))), 0.0015, 'sole'); }
-      const fender = new THREE.TorusGeometry(s(R.wheelR + 0.015), s(0.012), 3, hi ? 12 : 6, Math.PI * 0.9); fender.rotateY(Math.PI / 2); fender.rotateX(ax === ra ? -0.1 : 0.15); fender.translate(ax.x, ax.y, ax.z); add(fender, 'bike');
-    }
-    tub(bb, st, 0.017); tub(bb, ht0, 0.02); tub(V3(0, s(0.5), s(-0.1)), ht0.clone().lerp(ht1, 0.3), 0.016); tub(ht0, ht1, 0.022);
-    for (const sx of [-1, 1]) { tub(bb.clone().setX(sx * s(0.04)), ra.clone().setX(sx * s(0.05)), 0.009); tub(st.clone().setX(sx * s(0.02)), ra.clone().setX(sx * s(0.05)), 0.008); tub(ht0.clone().setX(sx * s(0.02)), fa.clone().setX(sx * s(0.045)), 0.01); }
-    const sp = v(R.saddle); tub(st, sp.clone().add(V3(0, -s(0.02), 0)), 0.012, 'metal');
-    const sad = rbox2(s(0.15), s(0.05), s(0.26), s(0.02), 1); sad.translate(sp.x, sp.y - s(0.02), sp.z + s(0.01)); add(sad, 'metal');
-    const g = R.grips, stem = V3(0, s(g[1] - 0.02), s(g[2] + 0.06)); tub(ht1, stem, 0.013, 'metal');
-    const pts = [V3(-s(g[0]), s(g[1]), s(g[2])), V3(-s(0.12), s(g[1] - 0.01), s(g[2] + 0.08)), stem, V3(s(0.12), s(g[1] - 0.01), s(g[2] + 0.08)), V3(s(g[0]), s(g[1]), s(g[2]))];
-    for (let i = 0; i < pts.length - 1; i++) tub(pts[i], pts[i + 1], 0.011, 'metal');
-    for (const sx of [-1, 1]) tub(V3(sx * s(g[0] - 0.05), s(g[1]), s(g[2])), V3(sx * s(g[0] + 0.03), s(g[1]), s(g[2])), 0.016, 'belt');
-    const ring = new THREE.CylinderGeometry(s(0.1), s(0.1), s(0.006), hi ? 16 : 8); ring.rotateZ(Math.PI / 2); ring.translate(-s(0.05), bb.y, bb.z); add(ring, 'metal');
-    // rear rack
-    tub(V3(-s(0.07), s(0.78), s(-0.3)), V3(-s(0.07), s(0.78), s(-0.72)), 0.006, 'metal'); tub(V3(s(0.07), s(0.78), s(-0.3)), V3(s(0.07), s(0.78), s(-0.72)), 0.006, 'metal');
-    for (const sx of [-1, 1]) tub(V3(sx * s(0.07), s(0.78), s(-0.68)), ra.clone().setX(sx * s(0.06)), 0.006, 'metal');
-  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -915,7 +886,7 @@ function makeClips(P, female) {
     } });
   });
   // talk: standing conversation with beat gestures, nods and glances
-  const talk = clip('talk', 4, 48, (u) => {
+  const talk = clip('talking', 4, 48, (u) => {
     const p = u * TAU, shift = 0.6 * sin(p), g1 = max(0, sin(2 * p)) ** 1.5, g2 = max(0, sin(3 * p + 2)) ** 2;
     const pose = stand(shift, { r: {
       hips: [0.01, 0.04 * shift, 0.03 * shift], spine: [0.0, -0.03 * shift + 0.04 * g1, -0.02 * shift], chest: [-0.01, 0.05 * g1 - 0.02, 0],
@@ -942,7 +913,7 @@ function makeClips(P, female) {
     return pose;
   });
   // wait: impatient weight shifting, looking around, checking the watch
-  const wait = clip('wait', 8, 64, (u) => {
+  const wait = clip('waiting', 8, 64, (u) => {
     const p = u * TAU, shift = sin(p) * 1.4, watch = sstep(0.52, 0.6, u) * (1 - sstep(0.72, 0.8, u)), look = sin(p * 2 + 0.5) * (1 - watch);
     const pose = stand(shift, { r: {
       hips: [0.01, 0.05 * shift, 0.05 * shift], spine: [0, -0.03 * shift, -0.035 * shift], chest: [0, -0.02 * shift, -0.02 * shift],
@@ -953,10 +924,10 @@ function makeClips(P, female) {
     pose.after = { 'hand.L': [lerp(0.06, -0.2, watch), lerp(0, 1.2, watch), -0.08] };
     return pose;
   });
-  // sit_bench: seat surface at BENCH_RIG.seatY above the root, hips over the root, hands on the thighs
-  const sitBench = clip('sit_bench', 6, 36, (u) => {
+  // sitting (bench): seat surface at BENCH_RIG.seatY above the root, hips over the root, hands on the thighs
+  const sitBench = clip('sitting', 6, 36, (u) => {
     const p = u * TAU, br = sin(2 * p);
-    const pose = { pos: [0, BENCH_RIG.seatY + 0.085 * S, 0], r: {
+    const pose = { pos: [0, BENCH_RIG.seatY + 0.085 * S, -0.05], r: {
       hips: [-0.12, 0, 0], spine: [0.06 - 0.01 * br, 0, 0], chest: [0.05 - 0.01 * br, 0.03 * sin(p), 0], neck: [0.04, 0.1 * sin(p + 0.5), 0], head: [0.04 + 0.03 * sin(2 * p), 0.18 * sin(p + 0.9), 0],
     } };
     pose.legs = { L: { ankle: V3(0.13 * S, 0.07 * S, 0.47 * S), pitch: 0, yaw: 0.12, pole: V3(0.2, 0.4, 1).normalize() }, R: { ankle: V3(-0.12 * S, 0.07 * S, 0.43 * S), pitch: 0, yaw: -0.1, pole: V3(-0.2, 0.4, 1).normalize() } };
@@ -964,7 +935,7 @@ function makeClips(P, female) {
     pose.after = { 'hand.L': [-1.2, 0, 0.2], 'hand.R': [-1.2, 0, -0.2] };
     return pose;
   });
-  const cycle = clip('cycle', 1.0, 24, (u) => cyclePose(P, u));
+  const cycle = clip('cycling', 1.0, 24, (u) => cyclePose(P, u));
 
   const jump = clip('jump', 1.2, 12, (u) => {
     const p = u * TAU, k = 0.06 * sin(p);

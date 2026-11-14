@@ -14,6 +14,7 @@ import { events } from './core/events.js';
 import { rnd, pip } from './core/math.js';
 import { loadModels, loadCity, loadStreets } from './world/data.js';
 import { buildCity } from './world/city.js';
+import { buildHauptbahnhof } from './world/hauptbahnhof.js';
 import { uniforms } from './world/materials.js';
 import { Physics } from './world/physics.js';
 import { Furniture } from './world/furniture.js';
@@ -166,6 +167,7 @@ async function boot() {
     await yieldFrame();
     ctx.env = new Environment();
     ctx.env.build();
+    buildHauptbahnhof(cityResult.physics); // station collision joins the static trimesh
 
     stage(0.62, 'Creating the physics world');
     await yieldFrame();
@@ -346,6 +348,7 @@ function frame(raw, render = true) {
       ctx.peds.update(dt, player.position);
       ctx.police.update(dt);
       ctx.furniture.update(dt, ctx.vehicles.list);
+      ctx.station?.update(dt);
       ctx.wanted.update(dt, ctx.police.seesPlayer);
       ctx.missions.update(dt);
       ctx.markers.update(dt);

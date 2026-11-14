@@ -18,6 +18,9 @@ import car_bus from '../../assets/models/car_bus.glb';
 import car_ambulance from '../../assets/models/car_ambulance.glb';
 import car_tow from '../../assets/models/car_tow.glb';
 import car_scooter from '../../assets/models/car_scooter.glb';
+import car_tram from '../../assets/models/car_tram.glb';
+import car_bicycle from '../../assets/models/car_bicycle.glb';
+import car_refuse from '../../assets/models/car_refuse.glb';
 import character_male from '../../assets/models/character_male.glb';
 import character_female from '../../assets/models/character_female.glb';
 import prop_lamp from '../../assets/models/prop_lamp.glb';
@@ -37,6 +40,9 @@ const MODEL_FILES = {
   car_ambulance,
   car_tow,
   car_scooter,
+  car_tram,
+  car_bicycle,
+  car_refuse,
   character_male,
   character_female,
   prop_lamp,

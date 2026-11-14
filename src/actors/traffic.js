@@ -31,6 +31,7 @@ import {
 } from '../world/roadNetwork.js';
 import { pickKind } from './vehicles.js';
 import { Transit } from './transit.js';
+import { inStationArea } from '../world/station/zones.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const FWD = new THREE.Vector3(0, 0, 1);
@@ -79,7 +80,8 @@ export function spawnVehicle(kind, x, z, yaw, mode, opts) {
 }
 
 const KINDS = {
-  bike: ['bicycle', 'bike', 'cyclist'],
+  // two-wheelers riding at the kerb; the delivery moped stands in until a bicycle model exists
+  bike: ['bicycle', 'bike', 'cyclist', 'scooter'],
   truck: ['truck', 'lorry', 'box_truck'],
   refuse: ['refuse', 'refuse_truck', 'garbage', 'garbage_truck', 'bin_lorry'],
   ambulance: ['ambulance', 'rtw'],
@@ -105,6 +107,32 @@ export class Traffic {
     this.crossings = [];
     this.evTimer = 120;
     this.stats = { cars: 0, parked: 0, bikes: 0, trams: 0, buses: 0, ms: 0, msAvg: 0 };
+    // scratch state for the per-step AI (no allocations in the hot loop)
+    this.res = { gap: Infinity, vl: 0, car: null };
+    this.k = { car: null, v0: 1, A: 1, B: 1, acc: 0 };
+    this.stopAt = (d, s0 = 0.4) => {
+      const K = this.k;
+      if (d >= 60) return;
+      K.acc = Math.min(K.acc, idm(K.car.speed, K.v0, Math.max(d, 0.05) + s0, 0, 0, K.A, K.B, s0));
+      // IDM only creeps up to a stop line: come to a proper standstill at the end
+      if (d < 0.6 && K.car.speed < 2) K.acc = Math.min(K.acc, -2.5);
+    };
+    this.cor = { p: null, fx: 0, fz: 0, halfW: 0, myHalf: 0, res: null };
+    this.corTest = (x, z, w, maxAhead, half, vl) => {
+      const C = this.cor;
+      const dx = x - C.p.x,
+        dz = z - C.p.z;
+      const ahead = dx * C.fx + dz * C.fz;
+      if (ahead <= 0 || ahead > maxAhead) return;
+      if (Math.abs(dx * C.fz - dz * C.fx) > C.halfW + w) return;
+      const gap = ahead - C.myHalf - half;
+      if (gap < C.res.gap) {
+        C.res.gap = gap;
+        C.res.vl = vl;
+      }
+    };
+    this.active = [];
+    this.sirens = [];
     this.transit = new Transit(this);
     ctx.transit = this.transit;
   }
@@ -113,8 +141,7 @@ export class Traffic {
     const district = ctx.player?.position && ctx.game?.district(ctx.player.position);
     // Keep a modest daytime traffic uplift around the station and retail core;
     // these districts draw workers, visitors and shoppers beyond their residents.
-    const localFlow =
-      ['Innenstadt', 'Bahnhofsviertel'].includes(district) && this.clock.hour >= 7 && this.clock.hour < 21 ? 1.08 : 1;
+    const localFlow = ['Innenstadt', 'Bahnhofsviertel'].includes(district) && this.clock.hour >= 7 && this.clock.hour < 21 ? 1.08 : 1;
     return Math.round(QUALITY[ctx.quality].traffic * settings.get('trafficDensity') * this.factor * localFlow);
   }
 
@@ -222,7 +249,7 @@ export class Traffic {
           // German parking: in the driving direction of that side
           const p = RoadNetwork.pose(e, 1, s, lat);
           const yaw = side > 0 ? p.yaw : wrapAngle(p.yaw + Math.PI);
-          if (Math.hypot(p.x - spawn.x, p.z - spawn.z) < 60) continue;
+          if (Math.hypot(p.x - spawn.x, p.z - spawn.z) < 60 || inStationArea(p.x, p.z)) continue;
           let blocked = false;
           for (const L of lampGrid.query(p.x, p.z, 4)) if (Math.hypot(L[0] - p.x, L[1] - p.z) < 3.0) blocked = true;
           for (const r of railGrid.query(p.x, p.z, 12)) if (Math.hypot(r[0] - p.x, r[1] - p.z) < 3.5) blocked = true;
@@ -273,7 +300,8 @@ export class Traffic {
 
   turnFor(ai, edge, dir, nodeId) {
     const J = ctx.roads.junction(nodeId);
-    const inLeg = J.byEdge.get(ai.edge.id), out = J.byEdge.get(edge.id);
+    const inLeg = J.byEdge.get(ai.edge.id),
+      out = J.byEdge.get(edge.id);
     return inLeg && out ? turnKind(inLeg.bearing + Math.PI, out.bearing) : 'S';
   }
 
@@ -327,6 +355,7 @@ export class Traffic {
     ai.held = false;
     ai.wait = 0;
     ai.lastSig = null;
+    ai.amberGo = -1;
     ai.react = 0;
     if (ai.next) {
       const n = ai.next;
@@ -592,13 +621,20 @@ export class Traffic {
     // buckets of vehicles per (edge, direction) and per junction
     const buckets = this.buckets,
       jn = this.jn;
-    buckets.clear();
-    jn.clear();
-    const active = [];
+    for (const b of buckets.values()) b.length = 0;
+    for (const l of jn.values()) l.length = 0;
+    const active = this.active,
+      sirens = this.sirens;
+    active.length = sirens.length = 0;
+    let bikes = 0,
+      buses = 0;
     for (const car of ctx.vehicles.list) {
       if (car.mode !== 'ai' || !car.ai || car.destroyed) continue;
       const ai = car.ai;
       active.push(car);
+      if (car.siren) sirens.push(car);
+      if (ai.role === 'bike') bikes++;
+      else if (ai.role === 'bus') buses++;
       const k = ai.edge.id * 2 + (ai.dir > 0 ? 1 : 0);
       let b = buckets.get(k);
       if (!b) buckets.set(k, (b = []));
@@ -606,11 +642,21 @@ export class Traffic {
       const rem = ai.edge.len - ai.s;
       if (ai.next && rem < 45) {
         const node = ai.dir > 0 ? ai.edge.b : ai.edge.a;
-        this.jnPush(node, { car, inE: ai.edge, outE: ai.next.edge, dist: rem, eta: rem / Math.max(car.speed, 1), inside: ai.committed === node });
+        const e = (ai.jA ||= { car });
+        e.inE = ai.edge;
+        e.outE = ai.next.edge;
+        e.dist = rem;
+        e.eta = rem / Math.max(car.speed, 1);
+        e.inside = ai.committed === node;
+        this.jnPush(node, e);
       }
-      if (ai.jnNode >= 0 && ai.prevEdge && ai.s < 12) this.jnPush(ai.jnNode, { car, inE: ai.prevEdge, outE: ai.edge, dist: 0, eta: 0, inside: true });
+      if (ai.jnNode >= 0 && ai.prevEdge && ai.s < 12) {
+        const e = (ai.jB ||= { car, dist: 0, eta: 0, inside: true });
+        e.inE = ai.prevEdge;
+        e.outE = ai.edge;
+        this.jnPush(ai.jnNode, e);
+      }
     }
-    const sirens = active.filter((c) => c.siren);
     const t = ctx.simTime;
     let n = 0;
     for (const car of active) {
@@ -633,9 +679,9 @@ export class Traffic {
     s.cars = active.length;
     s.thinking = n;
     s.parked = this.parked.size;
-    s.bikes = active.filter((c) => c.ai.role === 'bike').length;
+    s.bikes = bikes;
     s.trams = this.transit.trams.length;
-    s.buses = active.filter((c) => c.ai.role === 'bus').length;
+    s.buses = buses;
   }
 
   jnPush(node, entry) {
@@ -647,26 +693,8 @@ export class Traffic {
   /** Nearest vehicle ahead in the same (edge, dir) flow and on the planned next edge. */
   pathLeader(car, ai, res) {
     const myHalf = car.length / 2;
-    const scan = (list, offset) => {
-      if (!list) return;
-      for (const o of list) {
-        if (o === car) continue;
-        const oa = o.ai;
-        const ds = oa.s + offset - ai.s;
-        if (ds <= 0 || ds > 80) continue;
-        const latGap = Math.abs(oa.lat + oa.latX - (ai.lat + ai.latX));
-        const extra = oa.role === 'bike' || ai.role === 'bike' ? 1.0 : 0.25;
-        if (latGap > (car.width + o.width) / 2 + extra) continue;
-        const gap = ds - myHalf - o.length / 2;
-        if (gap < res.gap) {
-          res.gap = gap;
-          res.vl = o.speed;
-          res.car = o;
-        }
-      }
-    };
-    scan(this.buckets.get(ai.edge.id * 2 + (ai.dir > 0 ? 1 : 0)), 0);
-    if (ai.next) scan(this.buckets.get(ai.next.edge.id * 2 + (ai.next.dir > 0 ? 1 : 0)), ai.edge.len);
+    this.scanFlow(this.buckets.get(ai.edge.id * 2 + (ai.dir > 0 ? 1 : 0)), 0, car, ai, res);
+    if (ai.next) this.scanFlow(this.buckets.get(ai.next.edge.id * 2 + (ai.next.dir > 0 ? 1 : 0)), ai.edge.len, car, ai, res);
     // oncoming vehicle in my lane (overtaking)
     const opp = this.buckets.get(ai.edge.id * 2 + (ai.dir > 0 ? 0 : 1));
     if (opp)
@@ -683,23 +711,42 @@ export class Traffic {
       }
   }
 
+  /** Followed vehicles in one (edge, dir) list, `offset` metres further along the route. */
+  scanFlow(list, offset, car, ai, res) {
+    if (!list) return;
+    const myHalf = car.length / 2;
+    {
+      for (const o of list) {
+        if (o === car) continue;
+        const oa = o.ai;
+        const ds = oa.s + offset - ai.s;
+        if (ds <= 0 || ds > 80) continue;
+        const latGap = Math.abs(oa.lat + oa.latX - (ai.lat + ai.latX));
+        const extra = oa.role === 'bike' || ai.role === 'bike' ? 1.0 : 0.25;
+        if (latGap > (car.width + o.width) / 2 + extra) continue;
+        const gap = ds - myHalf - o.length / 2;
+        if (gap < res.gap) {
+          res.gap = gap;
+          res.vl = o.speed;
+          res.car = o;
+        }
+      }
+    }
+  }
+
   /** Geometric look-ahead for everything not in the lane flow (player, parked, crossing, trams, peds). */
   corridor(car, ai, p, fx, fz, res) {
     const halfW = car.width / 2;
     const myHalf = car.length / 2;
     const look = 10 + car.speed * 2.2;
-    const test = (x, z, w, maxAhead, half, vl) => {
-      const dx = x - p.x,
-        dz = z - p.z;
-      const ahead = dx * fx + dz * fz;
-      if (ahead <= 0 || ahead > maxAhead) return;
-      if (Math.abs(dx * fz - dz * fx) > halfW + w) return;
-      const gap = ahead - myHalf - half;
-      if (gap < res.gap) {
-        res.gap = gap;
-        res.vl = vl;
-      }
-    };
+    const C = this.cor;
+    C.p = p;
+    C.fx = fx;
+    C.fz = fz;
+    C.halfW = halfW;
+    C.myHalf = myHalf;
+    C.res = res;
+    const test = this.corTest;
     const myEdge = ai.edge,
       nextEdge = ai.next?.edge;
     for (const o of ctx.vehicles.grid.query(p.x + fx * 10, p.z + fz * 10, 22)) {
@@ -744,7 +791,7 @@ export class Traffic {
 
     // desired speed: limit, driver temperament, weather, turn ahead
     let v0 = (edge.limit ?? edge.speed) * ai.v0f * (1 - rain * 0.12);
-    if (role === 'bike') v0 = 4.2 + ai.seed * 2.2;
+    if (role === 'bike') v0 = car.kind === 'scooter' ? Math.min(v0, 7 + ai.seed * 2) : 4.2 + ai.seed * 2.2;
     const remaining = edge.len - ai.s;
     const next = ai.next;
     const nodeId = ai.dir > 0 ? edge.b : edge.a;
@@ -761,18 +808,24 @@ export class Traffic {
     const T = ai.T * (1 + rain * 0.3);
     const A = role === 'bus' || role === 'refuse' ? 1.0 : role === 'bike' ? 0.9 : 1.5;
     const B = 2.4;
-    let acc = A * (1 - Math.pow(car.speed / Math.max(v0, 0.1), 4));
-    const stopAt = (d, s0 = 0.4) => {
-      if (d < 60) acc = Math.min(acc, idm(car.speed, v0, Math.max(d, 0.05) + s0, 0, 0, A, B, s0));
-    };
+    const K = this.k;
+    K.car = car;
+    K.v0 = v0;
+    K.A = A;
+    K.B = B;
+    K.acc = A * (1 - Math.pow(car.speed / Math.max(v0, 0.1), 4));
+    const stopAt = this.stopAt;
 
     // ---- leaders
-    const res = { gap: Infinity, vl: 0, car: null };
+    const res = this.res;
+    res.gap = Infinity;
+    res.vl = 0;
+    res.car = null;
     this.pathLeader(car, ai, res);
     const flowLeader = res.car;
     const flowGap = res.gap;
     this.corridor(car, ai, p, fx, fz, res);
-    if (res.gap < 90) acc = Math.min(acc, idm(car.speed, v0, Math.max(res.gap, 0.05), res.vl, T, A, B, role === 'bike' ? 1.2 : 2.2));
+    if (res.gap < 90) K.acc = Math.min(K.acc, idm(car.speed, v0, Math.max(res.gap, 0.05), res.vl, T, A, B, role === 'bike' ? 1.2 : 2.2));
 
     // ---- junction: lights, right of way, box clear
     ai.held = false;
@@ -785,6 +838,8 @@ export class Traffic {
         else {
           if (sig && !isEv) {
             if (sig.state === 2 || (sig.state === 1 && (car.speed * car.speed) / (2 * Math.max(dStop, 0.1)) < 3.8)) holdReason = 'signal';
+            else if (sig.state === 1 && dStop < 25 && car.speed > 3)
+              ai.amberGo = nodeId; // too close to stop: drive on through amber
             else if (ai.lastSig === 'signal') {
               if (car.speed < 0.5) ai.react = 0.5 + rnd() * 0.8; // Anfahren nach Grün
               ai.lastSig = null;
@@ -794,9 +849,11 @@ export class Traffic {
             ai.react -= dt;
             holdReason ||= 'react';
           }
+          if (ai.amberGo === nodeId && holdReason === 'signal') holdReason = null;
           if (!holdReason) holdReason = this.rightOfWay(car, ai, nodeId, J, !!sig, isEv);
           if (!holdReason && this.exitBlocked(car, ai)) holdReason = 'exit';
           if (isEv && holdReason !== 'box') holdReason = null;
+          ai.why = holdReason;
           if (holdReason) {
             ai.held = true;
             stopAt(dStop);
@@ -811,7 +868,7 @@ export class Traffic {
       }
       if (holdReason === 'signal') ai.lastSig = 'signal';
     }
-    if (isEv && node.signal && remaining < 30) v0 = Math.min(v0, 7);
+    if (isEv && node.signal && remaining < 30) K.v0 = v0 = Math.min(v0, 7);
     ai.wait = ai.held && car.speed < 0.5 ? ai.wait + dt : 0;
 
     // ---- zebra crossings ahead (current and next edge)
@@ -834,7 +891,7 @@ export class Traffic {
         if (d < 60 && Math.sin(ev.yaw) * fx + Math.cos(ev.yaw) * fz > 0.3) {
           latX = Math.max(latX, 1.1);
           v0 = Math.min(v0, 2.5);
-          acc = Math.min(acc, A * (1 - Math.pow(car.speed / 2.5, 4)));
+          K.acc = Math.min(K.acc, A * (1 - Math.pow(car.speed / 2.5, 4)));
           car.indicator = 1;
         }
       }
@@ -858,7 +915,7 @@ export class Traffic {
     if (edge.nLanes > 1 && role !== 'bike' && !ai.passing) this.laneChoice(car, ai, remaining, flowLeader, flowGap, v0);
 
     // integrate speed
-    acc = clamp(acc, -9, A);
+    const acc = clamp(K.acc, -9, A);
     car.speed = Math.max(0, car.speed + acc * dt);
     if (car.speed < 0.05 && acc <= 0) car.speed = 0;
     ai.stuck = car.speed < 0.2 ? ai.stuck + dt : 0;
@@ -903,6 +960,14 @@ export class Traffic {
     if (car.speed > 0.05 || Math.abs(wrapAngle(pose.yaw - car.yaw)) > 0.02) car.yaw += wrapAngle(pose.yaw - car.yaw) * damp(10, dt);
     const nx = lerp(p.x, pose.x, damp(14, dt)),
       nz = lerp(p.z, pose.z, damp(14, dt));
+    if (!Number.isFinite(nx) || !Number.isFinite(nz) || !Number.isFinite(car.yaw)) {
+      // never hand NaN to Rapier (it panics); record what happened and re-place the car
+      this.nan = { role, kind: car.kind, edge: edge.id, s: ai.s, speed: car.speed, lat: ai.lat, latX: ai.latX, pose: { ...pose } };
+      car.speed = 0;
+      car.yaw = 0;
+      this.place(car, ctx.roads.randomEdge(rnd), 1, 1, role === 'bus' || role === 'ev' ? role : 'car');
+      return;
+    }
     car.body.setNextKinematicTranslation({ x: nx, y: car.H0 + 0.035, z: nz });
     _q.setFromAxisAngle(UP, car.yaw);
     car.body.setNextKinematicRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w });

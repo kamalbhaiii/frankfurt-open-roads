@@ -26,6 +26,8 @@ export const BLIP_STYLES = {
   health: { color: '#46c37b', glyph: '♥', label: 'Health' },
   armor: { color: '#3d9bff', glyph: '◈', label: 'Armour' },
   cop: { color: '#3d7bff', glyph: '', label: 'Police unit' },
+  station: { color: '#ec0016', glyph: 'H', label: 'Frankfurt (Main) Hbf' },
+  busterminal: { color: '#73d700', glyph: 'F', label: 'Fernbusterminal' },
 };
 
 export class Blips {
